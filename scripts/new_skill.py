@@ -1,0 +1,428 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+new_skill.py — 从需求生成一份合规的技能骨架（生成即体检）
+
+用法:
+    python scripts/new_skill.py <skill-name> [选项]
+
+常用示例:
+    # 最小生成（市场字段齐全，建 scripts/ references/）
+    python scripts/new_skill.py oa-todo-bg --display-name 待办查询 \
+        --desc "无头登录 OA 拉取待办列表。当用户说「查待办」「OA 待办」时使用。" \
+        --desc-zh "无头登录 OA，拉取待办列表" \
+        --desc-en "Fetch the OA todo list headlessly" \
+        --triggers 查待办,OA待办
+
+    # 带依赖与配置模板
+    python scripts/new_skill.py report-gen --dirs scripts,references,config,templates \
+        --deps requests,openpyxl --config-fields endpoint,username,password
+
+    # 只本机自用，不要市场字段
+    python scripts/new_skill.py my-tool --mode local
+
+交付定义:
+    `--out` 默认就是本机技能目录 ~/.workbuddy/skills，所以**生成即安装**，重启会话即可用。
+    把 --out 指到别处（工作区、临时目录）时骨架不会生效，此时加 --install 会额外装一份。
+
+选项:
+    --out <目录>            技能父目录（默认 ~/.workbuddy/skills）
+    --display-name <名>     中文展示名（默认取 name 的破折号转空格形式）
+    --display-name-en <名>  英文展示名（默认由 name 转 Title Case）
+    --desc <文本>           description：做什么 / 何时触发 / 触发词（建议 60~200 字）
+    --desc-zh <文本>        中文一句话介绍（30 字内）
+    --desc-en <文本>        英文一句话介绍（首字母大写，结尾不加句号）
+    --category <分类>       市场分类，默认 development
+    --author <署名>         默认读取 ~/.workbuddy/skills 内已有技能的署名为参考，否则留 <你的署名>
+    --triggers a,b,c        结构化触发词，逗号分隔；会同时补进 description
+    --dirs scripts,references,templates,assets,config   要创建的子目录（默认 scripts,references）
+    --deps requests,openpyxl    第三方依赖；给了就自动生成 scripts/setup.py
+    --config-fields a,b     生成 config/settings.example.json 的空字段（配合 --dirs config）
+    --mode market|local     默认 market（字段齐全，可上架）；local 只留本机必需字段
+    --no-audit              生成后不自动体检
+    --json                  机器可读输出
+    --force                 目标目录已存在时覆盖（仅限看起来确实是技能目录的）
+
+退出码:
+    0 成功（含体检通过）| 1 生成成功但体检有 P1 | 2 生成成功但体检有 P0
+    | 3 参数错误（技能名非法/目录已存在）| 4 写入失败
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import shutil
+import sys
+from pathlib import Path
+
+sys.dont_write_bytecode = True          # 不留 __pycache__
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+DEFAULT_PARENT = Path.home() / ".workbuddy" / "skills"
+VALID_NAME = re.compile(r"^[a-z0-9][a-z0-9-]*$")
+KNOWN_DIRS = ("scripts", "references", "templates", "assets", "config")
+
+
+# ----------------------------------------------------------------- 工具函数
+
+def normalize_name(raw: str) -> str:
+    """把用户随手写的名字规整成 kebab-case（市场规范硬要求）。"""
+    s = raw.strip().strip("/\\").lower()
+    s = re.sub(r"[\s_]+", "-", s)
+    s = re.sub(r"-{2,}", "-", s)
+    s = re.sub(r"[^a-z0-9-]", "", s)
+    return s.strip("-")
+
+
+def title_case(name: str) -> str:
+    return " ".join(w.capitalize() for w in name.split("-") if w)
+
+
+def guess_author() -> str:
+    """署名默认值：先读 ~/.workbuddy/USER.md 的姓名，再退回系统用户名。
+
+    不要从其它已装技能里抓 author —— 那会把市场技能作者的署名
+    错安到当前技能头上（实测抓到过别人的名字）。
+    """
+    try:
+        t = (Path.home() / ".workbuddy" / "USER.md").read_text(encoding="utf-8", errors="replace")
+        m = re.search(r"姓名[：:]\s*\**\s*([^\n*（(]+)", t)
+        if m:
+            v = m.group(1).strip().strip("*_ ")
+            if v:
+                return v
+    except OSError:
+        pass
+    return Path.home().name or "unknown"
+
+
+def is_inside(child: Path, parent: Path) -> bool:
+    """child 是否位于 parent 之内（判断骨架是否已落在本机技能目录里）。"""
+    try:
+        child.resolve().relative_to(parent.resolve())
+        return True
+    except (ValueError, OSError):
+        return False
+
+
+def install_copy(src: Path, name: str, force: bool):
+    """把生成的骨架复制一份到本机技能目录，让技能立刻可用。"""
+    dest = DEFAULT_PARENT / name
+    if dest.exists():
+        if not force:
+            print("安装跳过 : 已存在 %s（要覆盖请加 --force）" % dest)
+            return None
+        if not (dest / "SKILL.md").exists():
+            print("安装跳过 : %s 已存在且不含 SKILL.md，拒绝覆盖" % dest)
+            return None
+        shutil.rmtree(dest)  # skill-audit: ignore 仅在 --force 且目标含 SKILL.md 时触发
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(src, dest)
+    return dest
+
+
+def yaml_quote(s: str) -> str:
+    """单行标量：含 YAML 敏感字符时加引号。"""
+    if s == "":
+        return '""'
+    if re.search(r"[:#\[\]{}&*!|>'\"%@`]", s) or s[0] in "-? " or s[-1] == " ":
+        return '"%s"' % s.replace('"', '\\"')
+    return s
+
+
+def folded(key: str, text: str, indent: int = 2) -> str:
+    """写成 YAML 折叠块，长 description 在 SKILL.md 里更好读。"""
+    pad = " " * indent
+    return "%s: >-\n%s%s" % (key, pad, text)
+
+
+# ----------------------------------------------------------------- 内容生成
+
+def build_frontmatter(a, name: str, dirs, deps) -> str:
+    lines = ["---"]
+    lines.append("name: %s" % name)
+    lines.append("display_name: %s" % yaml_quote(a.display_name))
+    if a.mode == "market":
+        lines.append("display_name_en: %s" % yaml_quote(a.display_name_en))
+    lines.append(folded("description", a.desc))
+    if a.mode == "market":
+        lines.append(folded("description_zh", a.desc_zh))
+        lines.append(folded("description_en", a.desc_en))
+        lines.append("category: %s" % a.category)
+    lines.append("version: 0.1.0")
+    lines.append("author: %s" % yaml_quote(a.author))
+    if a.triggers:
+        lines.append("trigger:")
+        for t in a.triggers:
+            lines.append("  - %s" % t)
+    lines.append("agent_created: true")
+    lines.append("---")
+    return "\n".join(lines)
+
+
+def build_body(a, name: str, dirs, deps) -> str:
+    has = lambda d: d in dirs  # noqa: E731
+    out = []
+    out.append("# %s (%s)\n" % (a.display_name, name))
+    out.append("一句话说明它替用户省掉了什么。\n")
+    out.append("## 何时使用\n")
+    for t in (a.triggers or ["<场景一>", "<场景二>"]):
+        out.append("- 用户提到「%s」时" % t)
+    out.append("")
+
+    # 运行前提：只写真实存在的东西，避免引用缺失
+    pre = []
+    if deps:
+        pre.append("- 依赖：%s；首次使用先跑 `python scripts/setup.py`" % "、".join(
+            "`%s`" % d for d in deps))
+    else:
+        pre.append("- 依赖：无第三方依赖（如后续引入，记得补 `scripts/setup.py`）")
+    if has("config"):
+        pre.append("- 配置：真实值放 `~/.workbuddy/%s_config.json`，对外只留 "
+                   "`config/settings.example.json` 空模板" % name)
+    if pre:
+        out.append("## 运行前提\n")
+        out.extend(pre)
+        out.append("")
+
+    out.append("## 执行步骤\n")
+    out.append("当用户需要 <做什么> 时，按以下步骤执行：\n")
+    out.append("1. **<步骤名>** — 说明输入、命令与判断条件。")
+    out.append("2. **<步骤名>** — 说明失败时的行为（缺依赖/缺配置/无网络）。")
+    out.append("3. **<步骤名>** — 产出交付给用户，并说明输出文件放在哪。")
+    out.append("")
+
+    if dirs:
+        out.append("## 目录说明\n")
+        desc_map = {
+            "scripts": "执行逻辑（主脚本、`scripts/setup.py` 依赖安装）",
+            "references": "按需加载的参考文档（字段表、接口约定、踩坑记录）",
+            "templates": "可复制的骨架 / 报告模板",
+            "assets": "产出用资源（图片、字体、样板稿），不读进上下文",
+            "config": "只放 `*.example.*` 空模板，真实配置放 `~/.workbuddy/`",
+        }
+        for d in dirs:
+            out.append("- `%s/` — %s" % (d, desc_map.get(d, "自定义资源目录")))
+        out.append("")
+
+    out.append("## 常见坑\n")
+    out.append("1. 把本次实现时踩到的坑写进来（现象 + 原因 + 规避），这是技能最值钱的部分。")
+    out.append("")
+    return "\n".join(out)
+
+
+SETUP_PY = '''#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""安装 {name} 的第三方依赖。
+
+用法:
+    python scripts/setup.py
+
+注意：部分环境下 `python -m pip` 会异常退出，此时改用 `pip install ...`。
+"""
+
+import subprocess
+import sys
+
+PACKAGES = [{pkgs}]
+
+
+def main() -> int:
+    if not PACKAGES:
+        print("无第三方依赖，无需安装。")
+        return 0
+    cmd = [sys.executable, "-m", "pip", "install", *PACKAGES]
+    print("执行：" + " ".join(cmd))
+    return subprocess.call(cmd)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+'''
+
+CONFIG_EXAMPLE = '''{{
+  "_comment": "复制为 settings.json 填入真实值。真实配置建议放 ~/.workbuddy/{name}_config.json，不要提交到仓库。",
+{fields}
+}}
+'''
+
+
+def build_setup_py(name: str, deps) -> str:
+    return SETUP_PY.format(name=name, pkgs=", ".join('"%s"' % d for d in deps))
+
+
+def build_config_example(name: str, fields) -> str:
+    lines = ['  "%s": ""' % f for f in fields]
+    return CONFIG_EXAMPLE.format(name=name, fields=",\n".join(lines))
+
+
+# ----------------------------------------------------------------- 主流程
+
+def write_all(target: Path, a, name: str, dirs, deps, fields, force: bool):
+    created = []
+    if target.exists():
+        if not force:
+            raise FileExistsError(target)
+        if not (target / "SKILL.md").exists():
+            # 只覆盖「看起来确实是技能目录」的目录，避免误删无关文件夹
+            raise ValueError("目标已存在且不含 SKILL.md，拒绝覆盖：%s" % target)
+        # skill-audit: ignore 仅覆盖目标技能目录，且要求该目录含 SKILL.md 且显式 --force
+        shutil.rmtree(target)  # skill-audit: ignore 同上
+        created.append("(覆盖) %s" % target)
+
+    target.mkdir(parents=True, exist_ok=False)
+    (target / "SKILL.md").write_text(
+        build_frontmatter(a, name, dirs, deps) + "\n\n" + build_body(a, name, dirs, deps),
+        encoding="utf-8")
+    created.append("SKILL.md")
+
+    for d in dirs:
+        (target / d).mkdir(parents=True, exist_ok=True)
+        created.append("%s/" % d)
+
+    if deps and "scripts" in dirs:
+        (target / "scripts" / "setup.py").write_text(build_setup_py(name, deps), encoding="utf-8")
+        created.append("scripts/setup.py")
+
+    if fields and "config" in dirs:
+        (target / "config" / "settings.example.json").write_text(
+            build_config_example(name, fields), encoding="utf-8")
+        created.append("config/settings.example.json")
+
+    return created
+
+
+def main() -> int:
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
+
+    ap = argparse.ArgumentParser(description="从需求生成合规的技能骨架")
+    ap.add_argument("skill_name")
+    ap.add_argument("--out", default=None, help="技能父目录，默认 ~/.workbuddy/skills")
+    ap.add_argument("--display-name", default=None)
+    ap.add_argument("--display-name-en", default=None)
+    ap.add_argument("--desc", default=None, help="description：做什么/何时触发/触发词")
+    ap.add_argument("--desc-zh", default=None)
+    ap.add_argument("--desc-en", default=None)
+    ap.add_argument("--category", default="development")
+    ap.add_argument("--author", default=None)
+    ap.add_argument("--triggers", default="")
+    ap.add_argument("--dirs", default="scripts,references")
+    ap.add_argument("--deps", default="")
+    ap.add_argument("--config-fields", default="")
+    ap.add_argument("--mode", choices=["market", "local"], default="market")
+    ap.add_argument("--no-audit", action="store_true")
+    ap.add_argument("--install", action="store_true",
+                    help="骨架生成在技能目录之外时，额外复制一份到 ~/.workbuddy/skills 让它本机可用")
+    ap.add_argument("--json", action="store_true")
+    ap.add_argument("--force", action="store_true")
+    args = ap.parse_args()
+
+    name = normalize_name(args.skill_name)
+    if not name or not VALID_NAME.match(name) or len(name) > 64:
+        print("技能名非法：%r（要求小写字母开头，只含小写字母/数字/连字符）" % args.skill_name)
+        return 3
+    if name != args.skill_name.strip().lower():
+        print("技能名已规整：%r -> %r" % (args.skill_name, name))
+
+    dirs = [d.strip() for d in args.dirs.split(",") if d.strip()]
+    unknown = [d for d in dirs if d not in KNOWN_DIRS]
+    if unknown:
+        print("未知子目录：%s（可选：%s）" % (", ".join(unknown), ", ".join(KNOWN_DIRS)))
+        return 3
+    deps = [d.strip() for d in args.deps.split(",") if d.strip()]
+    fields = [f.strip() for f in args.config_fields.split(",") if f.strip()]
+    if fields and "config" not in dirs:
+        dirs.append("config")
+
+    triggers = [t.strip() for t in re.split(r"[,，]", args.triggers) if t.strip()]
+    args.triggers = triggers          # 必须回写：否则下游会把整串按字符遍历
+    dirs = [d for d in KNOWN_DIRS if d in dirs]     # 统一成规范顺序展示
+
+    args.display_name = args.display_name or title_case(name)
+    args.display_name_en = args.display_name_en or title_case(name)
+    args.author = args.author or guess_author()
+    if not args.desc:
+        args.desc = ("<一句话说清这个技能解决什么问题。> 当用户提到「%s」"
+                     "或出现 <场景> 时使用。" % "」「".join(triggers or ["触发词A", "触发词B"]))
+    elif triggers:
+        miss = [t for t in triggers if t not in args.desc]
+        if miss:
+            args.desc = args.desc.rstrip() + " 也适用于「%s」这类说法。" % "」「".join(miss)
+    args.desc_zh = args.desc_zh or "<30 字以内的中文一句话介绍>"
+    args.desc_en = args.desc_en or "<One-line English introduction>"
+
+    parent = Path(args.out).expanduser().resolve() if args.out else DEFAULT_PARENT
+    target = parent / name
+
+    print("技能名   : %s" % name)
+    print("目标目录 : %s" % target)
+    print("模式     : %s" % ("技能市场分发规范" if args.mode == "market" else "本机自用"))
+    try:
+        created = write_all(target, args, name, dirs, deps, fields, args.force)
+    except FileExistsError:
+        print("目标已存在：%s\n如确认覆盖，加 --force（仅会覆盖含 SKILL.md 的技能目录）" % target)
+        return 3
+    except ValueError as e:
+        print(str(e))
+        return 3
+    except OSError as e:
+        print("写入失败：%s" % e)
+        return 4
+
+    print("已创建   : %s" % "、".join(created))
+
+    # ---- 落在技能目录之外时，本机不会生效，按需补装一份 ----
+    in_skill_dir = is_inside(target, DEFAULT_PARENT)
+    installed = None
+    if in_skill_dir:
+        installed = target
+    elif args.install:
+        installed = install_copy(target, name, args.force)
+
+    # ---- 生成即体检：闭环 ----
+    verdict = 0
+    summary = None
+    if not args.no_audit:
+        from audit_skill import audit  # noqa: E402  同目录脚本
+        rep = audit(target, market=(args.mode == "market"))
+        p0, p1, p2 = rep.count("P0"), rep.count("P1"), rep.count("P2")
+        summary = {"P0": p0, "P1": p1, "P2": p2, "verdict": rep.worst}
+        print("生成后体检: P0=%d  P1=%d  P2=%d" % (p0, p1, p2))
+        for f in rep.findings():
+            if f["severity"] in ("P0", "P1"):
+                print("  [%s] %s :: %s" % (f["severity"], f["rule"], f["hint"][:70]))
+        if p0:
+            verdict = 2
+        elif p1:
+            verdict = 1
+        else:
+            print("  骨架合规，可以开始填内容。")
+
+    if installed:
+        print("\n技能已就绪：%s" % installed)
+        print("  若未立刻出现在可用技能列表，重启会话即可被识别。")
+    else:
+        print("\n!! 本机还没有这个技能：%s 不在技能安装目录内。" % parent)
+        print("   要立刻可用，重跑时加 --install，或去掉 --out 用默认目录。")
+
+    print("\n下一步：")
+    print("  1. 打开 %s，把 <...> 占位全部替换成真实内容" % (target / "SKILL.md"))
+    print("  2. 补上「常见坑」——把本次实现踩到的坑写进去")
+    print("  3. python scripts/audit_skill.py \"%s\" --market" % target)
+    print("  4. python scripts/pack_skill.py \"%s\"" % target)
+
+    if args.json:
+        print(json.dumps({"name": name, "path": str(target),
+                          "installed": str(installed) if installed else None,
+                          "created": created, "audit": summary}, ensure_ascii=False))
+    return verdict
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
