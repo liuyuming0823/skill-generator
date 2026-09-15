@@ -66,6 +66,7 @@ sys.dont_write_bytecode = True          # 不留 __pycache__
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 DEFAULT_PARENT = Path.home() / ".workbuddy" / "skills"
+DEFAULT_NAME_PREFIX = "ym-"      # 命名约定：本机自建技能统一 ym- 开头（ym = 玉明）
 VALID_NAME = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 KNOWN_DIRS = ("scripts", "references", "templates", "assets", "config")
 
@@ -321,6 +322,10 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="从需求生成合规的技能骨架")
     ap.add_argument("skill_name")
     ap.add_argument("--out", default=None, help="技能父目录，默认 ~/.workbuddy/skills")
+    ap.add_argument("--prefix", default=DEFAULT_NAME_PREFIX,
+                    help="技能名前缀，默认 ym-（个人命名约定）；传空串等于不加")
+    ap.add_argument("--no-prefix", action="store_true",
+                    help="明确不加前缀（做通用/对外发布的技能时用）")
     ap.add_argument("--display-name", default=None)
     ap.add_argument("--display-name-en", default=None)
     ap.add_argument("--desc", default=None, help="description：做什么/何时触发/触发词")
@@ -342,12 +347,23 @@ def main() -> int:
     ap.add_argument("--force", action="store_true")
     args = ap.parse_args()
 
+    raw_name = args.skill_name.strip().lower()
     name = normalize_name(args.skill_name)
     if not name or not VALID_NAME.match(name) or len(name) > 64:
         print("技能名非法：%r（要求小写字母开头，只含小写字母/数字/连字符）" % args.skill_name)
         return 3
-    if name != args.skill_name.strip().lower():
+    if name != raw_name:
         print("技能名已规整：%r -> %r" % (args.skill_name, name))
+
+    # 命名约定：本机自建技能统一 ym- 开头。要跳过用 --no-prefix。
+    raw_prefix = "" if args.no_prefix else (args.prefix or "")
+    prefix = re.sub(r"[^a-z0-9]+", "-", raw_prefix.strip().lower()).strip("-")
+    prefix = (prefix + "-") if prefix else ""
+    if prefix and not name.startswith(prefix):
+        name = prefix + name
+        print("已按命名约定加前缀：%s（不想加用 --no-prefix）" % name)
+    elif prefix:
+        print("技能名已带 `%s` 前缀，保持不变" % prefix)
 
     dirs = [d.strip() for d in args.dirs.split(",") if d.strip()]
     unknown = [d for d in dirs if d not in KNOWN_DIRS]
@@ -363,8 +379,10 @@ def main() -> int:
     args.triggers = triggers          # 必须回写：否则下游会把整串按字符遍历
     dirs = [d for d in KNOWN_DIRS if d in dirs]     # 统一成规范顺序展示
 
-    args.display_name = args.display_name or title_case(name)
-    args.display_name_en = args.display_name_en or title_case(name)
+    # 展示名不带 ym- 前缀（前缀是技术标识，不该出现在给人看的名字里）
+    bare = name[len(prefix):] if prefix and name.startswith(prefix) else name
+    args.display_name = args.display_name or title_case(bare)
+    args.display_name_en = args.display_name_en or title_case(bare)
     args.author = args.author or guess_author()
     if not args.desc:
         args.desc = ("<一句话说清这个技能解决什么问题。> 当用户提到「%s」"

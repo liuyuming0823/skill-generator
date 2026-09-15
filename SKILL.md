@@ -9,7 +9,7 @@ description_zh: 按需求生成技能骨架，体检脱敏后打包成可上架�
 description_en: Generate, audit, sanitize and package agent skills into publishable bundles
 summary: 按需求生成技能骨架，或把已有实现体检、脱敏后打包成可分发、可上架的技能包
 category: dev-programming
-version: 2.2.1
+version: 2.2.2
 author: 刘玉明
 tags: [技能生成, 技能打包, 技能体检, 技能上架, skill]
 trigger:
@@ -117,6 +117,7 @@ python scripts/new_skill.py <skill-name> --out <父目录> \
 | 参数 | 作用 | 默认 |
 |---|---|---|
 | `--out` | 技能父目录。**默认就是技能目录，所以生成即安装** | `~/.workbuddy/skills` |
+| `--prefix` / `--no-prefix` | 技能名前缀。**默认一律加 `ym-`**（个人命名约定，ym = 玉明）；只想给个裸名时加 `--no-prefix` | `ym-` |
 | `--install` | 把 `--out` 指到工作区/临时目录时，额外复制一份到技能目录让它可用 | 关 |
 | `--desc` / `--desc-zh` / `--desc-en` | 描述三件套 | 生成占位文本，待你替换 |
 | `--triggers` | 结构化触发词（逗号分隔） | 空 |
@@ -125,6 +126,10 @@ python scripts/new_skill.py <skill-name> --out <父目录> \
 | `--config-fields` | 生成 `config/settings.example.json` 的空字段（自动带上 `config` 目录） | 空 |
 | `--mode` | `market` 全字段可上架 / `local` 只留本机必需 | `market` |
 | `--force` | 覆盖同名目录（**仅限含 `SKILL.md` 的技能目录**，避免误删） | 关 |
+
+> **命名约定：本机自建技能一律 `ym-` 开头。** 所以 `new_skill.py 待办查询` 这类写法直接传裸名即可，
+> 脚本会自动补成 `ym-待办查询的英文名`；已经带前缀的不会被叠加；`--no-prefix` 用于确实要发布出去的通用技能。
+> 前缀只进 `name` / `slug` / 目录名，**不进展示名** —— 展示名是给人看的，不带技术前缀。
 
 生成结果：
 
@@ -510,7 +515,19 @@ python scripts/make_icon.py --check ~/.workbuddy/skill-icons/*.png
 
 23. **拿 `✓ Published` 当「已经上线」** —— 返回成功只表示平台**已受理**。实测线上字段分三档：`tags` 秒级生效；`version` / `summary` / 描述 / 版本列表 / 下载包要等**三线安全审核**（内容合规 + 科恩漏洞扫描 + 云鼎 AI 安全评估）通过才写进 `latestVersion`；`category` 走 CLI 永远不变。所以发完立刻去商店看「没变化」是正常的，别急着重发——先查版本列表确认新版本号在不在。
 
+24. **忘了 `ym-` 前缀，或反过来给通用技能硬加前缀** —— 本机自建技能统一 `ym-` 开头，
+    `new_skill.py` 已默认补上。改名时记住 **`name` / 目录名 / 仓库名三处同步**，漏一处就会
+    「本地目录叫 A、商店里叫 B」，`skillhub install <slug>` 也对不上。真要发布给外人用的通用技能
+    加 `--no-prefix`，别把个人前缀带进别人的安装清单。
+
 ## 版本历史
+
+### v2.2.2 (2026-09-15)
+
+- **`new_skill.py` 默认给技能名加 `ym-` 前缀**（个人命名约定，ym = 玉明）：新增 `--prefix` /
+  `--no-prefix`；已带前缀不叠加；**展示名自动剥掉前缀**（`ym-demo-test` → `Demo Test`，
+  前缀只进 `name` / `slug` / 目录名）。
+- 新技能 `ym-skillhub-publisher` 同步按此约定命名。
 
 ### v2.2.1 (2026-09-15)
 
