@@ -68,9 +68,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from audit_skill import JUNK_DIRS, JUNK_FILES, JUNK_SUFFIX, audit  # noqa: E402
 
 # 技能市场分发规范字段：(字段名, 是否硬性)
+# 与 audit_skill.py 的 MARKET_REQUIRED / MARKET_RECOMMENDED 保持同一套口径 ——
+# 分头维护两套清单，正是「本地看着齐备、平台读不到」那类问题的病根。
 MARKET_FIELD_SPEC = [
-    ("name", True), ("display_name", False), ("display_name_en", False),
+    ("name", True), ("slug", False),
+    ("displayName", True),                                   # 平台（SkillHub）的展示名，驼峰
+    ("display_name", False), ("display_name_en", False),      # WorkBuddy 本机展示名
     ("description", True), ("description_zh", True), ("description_en", True),
+    ("summary", False), ("tags", False),
     ("category", False), ("version", True), ("author", False),
 ]
 
