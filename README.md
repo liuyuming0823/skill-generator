@@ -104,3 +104,9 @@ skill-generator/
 ## 依赖
 
 纯 Python 标准库，无需安装任何第三方包。
+
+## 相关项目
+
+- [expert-packager](https://github.com/liuyuming0823/expert-packager) —— 配套的**专家**生成器：生成、校验、安装、打包 WorkBuddy 专家包
+
+这对工具的分工是：**skill-generator 管「技能」，expert-packager 管「专家」**，两条上传规范不复用，别混。
