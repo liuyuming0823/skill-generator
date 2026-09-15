@@ -11,9 +11,13 @@ audit_skill.py — 技能打包前体检器
 
 用法:
     python scripts/audit_skill.py <技能目录> [--json] [--hide-p2] [--no-color] [--samples N]
+    python scripts/audit_skill.py <技能目录> --ignore-rule 引用缺失 [--ignore-rule ...]
+    python scripts/audit_skill.py --explain 引用缺失        # 这条规则判什么、怎么改、怎么放行
+    python scripts/audit_skill.py --selftest                # 自检：用带病样例验证体检器本身没坏
+    python scripts/audit_skill.py <技能目录> --fix [--write] # 半自动修复（默认只打印建议）
 
 退出码:
-    0 通过 | 1 有 P1 | 2 有 P0 | 3 参数/目录错误
+    0 通过 | 1 有 P1 | 2 有 P0 | 3 参数/目录错误 | 4 写入/打包失败
 """
 
 from __future__ import annotations
@@ -24,6 +28,10 @@ import os
 import re
 import sys
 from pathlib import Path
+
+sys.dont_write_bytecode = True          # 体检不该在技能目录里留 __pycache__
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _friendly import backup_root, die, explain_exit, use_utf8_stdout  # noqa: E402
 
 # ------------------------------------------------------------------ 常量
 
@@ -164,6 +172,25 @@ PLACEHOLDER_HINTS = (
 # 这些行必须跳过，否则体检器会把自己的规则表当成违规代码。
 PATTERN_DEF_MARKERS = ("re.compile(", "RegExp(", "new RegExp", "Pattern.compile(", "regex::Regex")
 
+# 规则表还有一种写法是**字典字面量**（`"msedge.exe": "Edge 浏览器",`）。
+# 上面那组标记只认 re.compile(，字典项一律漏网 —— 本技能自己就因此被判「驱动浏览器」。
+# 判据：命中词在该行里是被引号包住的字典键（`"词":` ）。真实代码不会这么写。
+DICT_KEY_LITERAL_RE = re.compile(r"""["']([^"'\n]{1,60})["']\s*:\s*["']""")
+
+# 低价值噪音：默认不逐条打印（仍计数，加 --show-noise 才展开）。
+# 「示例路径里没有这个文件」是正常的，逐条刷屏只会让人以为体检器在乱报。
+NOISE_RULES = {"约定/示例路径", "疑似产物路径"}
+
+
+def is_rule_table_hit(line: str, hit: str) -> bool:
+    """命中词是否只是规则表里被列出来的字面量，而不是真的在用。"""
+    if not hit:
+        return False
+    for m in DICT_KEY_LITERAL_RE.finditer(line):
+        if m.group(1).strip() == hit.strip():
+            return True
+    return False
+
 # ------------------------------------------------------------------ 工具
 
 
@@ -235,10 +262,15 @@ def is_identifier_reference(key: str, val: str) -> bool:
 
 
 class Report:
-    def __init__(self):
+    def __init__(self, ignored_rules=None):
         self._map = {}
+        self.ignored_rules = set(ignored_rules or ())
+        self.ignored_hits = 0          # 被 --ignore-rule / .skillignore 放过的条数
 
     def add(self, sev, cat, file, rule, line, sample, hint):
+        if rule in self.ignored_rules:
+            self.ignored_hits += 1
+            return
         key = (sev, cat, str(file), rule)
         f = self._map.get(key)
         if f is None:
@@ -267,15 +299,54 @@ class Report:
 # ------------------------------------------------------------------ 遍历
 
 
-def walk_tree(root: Path):
+def load_skillignore(root: Path):
+    """读技能根的 .skillignore，返回 (glob 列表, 规则名集合)。
+
+    写法：每行一个 glob（如 `icons/*`）；要按规则名放行写 `rule:引用缺失`。
+
+    ⚠️ v2.3.0 之前文档里写了这个文件，代码却没读它 —— 建了也不生效，这是实现与文档不一致的 bug。
+    """
+    p = root / ".skillignore"
+    globs, rules = [], set()
+    if not p.exists():
+        return globs, rules
+    for line in (read_text(p) or "").splitlines():
+        s = line.strip()
+        if not s or s.startswith("#"):
+            continue
+        if s.lower().startswith("rule:"):
+            rules.add(s[len("rule:"):].strip())
+        else:
+            globs.append(s.rstrip("/"))
+    return globs, rules
+
+
+def _ignored_by_glob(rel: str, globs) -> bool:
+    import fnmatch
+    name = Path(rel).name
+    for g in globs:
+        if fnmatch.fnmatch(name, g) or fnmatch.fnmatch(rel, g) or fnmatch.fnmatch(rel, g + "/*"):
+            return True
+    return False
+
+
+def walk_tree(root: Path, ignore_globs=()):
     files, junk_dirs = [], []
     for dirpath, dirnames, filenames in os.walk(root):
         d = Path(dirpath)
         keep = []
         for dn in dirnames:
-            (junk_dirs if dn in JUNK_DIRS else keep).append(d / dn)
+            if dn in JUNK_DIRS:
+                junk_dirs.append(d / dn)
+                continue
+            if ignore_globs and _ignored_by_glob(str((d / dn).relative_to(root)).replace("\\", "/"), ignore_globs):
+                continue
+            keep.append(dn)
         dirnames[:] = keep
         for fn in filenames:
+            rel = str((d / fn).relative_to(root)).replace("\\", "/")
+            if ignore_globs and _ignored_by_glob(rel, ignore_globs):
+                continue
             files.append(d / fn)
     return files, junk_dirs
 
@@ -534,6 +605,9 @@ def check_market(root: Path, rep: Report, content: str):
 def check_junk(root: Path, files, junk_dirs, rep: Report):
     # 垃圾文件打包时由 pack_skill.py 自动排除，不构成阻断，只做知情提示。
     for d in junk_dirs:
+        if d.name == ".git":
+            # 技能目录常常同时是 git 仓库；打包本就排除，报出来只是噪音
+            continue
         rep.add("P2", "垃圾文件", d.relative_to(root), "垃圾目录", 0,
                 "不应分发的目录：%s" % d.relative_to(root),
                 "打包时自动排除，无需手动清理；若该目录其实是技能的一部分，请改名")
@@ -636,17 +710,20 @@ def check_danger(root: Path, files, rep: Report):
             if line.lstrip().startswith("#!"):
                 continue
             for rule_name, rx in DANGER_P0:
-                if rx.search(line):
+                m = rx.search(line)
+                if m and not is_rule_table_hit(line, m.group(0)):
                     rep.add("P0", "危险操作", rel, rule_name, lineno, line.strip()[:100],
                             "限制作用范围（只动自身进程/自身目录）、加二次确认，并在 SKILL.md 写明风险与回滚方案")
             for rule_name, rx in DANGER_P1:
-                if rx.search(line):
+                m = rx.search(line)
+                if m and not is_rule_table_hit(line, m.group(0)):
                     rep.add("P1", "危险操作", rel, rule_name, lineno, line.strip()[:100],
                             "确认作用范围可控；在 SKILL.md 说明会清理什么、不会碰什么。"
                             "作用范围已收窄（如上方已校验目标确属自身目录）时，"
                             "在该行行尾加 # skill-audit: ignore 放行")
             for rule_name, rx in SIDE_EFFECT_RULES:
-                if rx.search(line):
+                m = rx.search(line)
+                if m and not is_rule_table_hit(line, m.group(0)):
                     rep.add("P2", "外部副作用", rel, rule_name, lineno, line.strip()[:90],
                             "在 SKILL.md 显式声明该能力及其影响范围，并说明凭据来源；这条是知情项，不是错误")
 
@@ -813,15 +890,18 @@ def check_refs(root: Path, files, rep: Report):
 # ------------------------------------------------------------------ 主流程
 
 
-def audit(root: Path, market: bool = False) -> Report:
-    rep = Report()
+def audit(root: Path, market: bool = False, ignored_rules=None, ignore_globs=None) -> Report:
+    # .skillignore 里既能写 glob 排除文件，也能写 `rule:规则名` 按规则放行
+    # load_skillignore 返回 (glob 列表, 规则名集合)，顺序不能颠倒
+    si_globs, si_rules = load_skillignore(root)
+    rep = Report(ignored_rules=set(ignored_rules or ()) | si_rules)
     if not root.exists() or not root.is_dir():
         rep.add("P0", "参数", root, "目录无效", 0, "目录不存在或不是目录", "")
         return rep
     content = check_structure(root, rep, market)
     if market and content is not None:
         check_market(root, rep, content)
-    files, junk_dirs = walk_tree(root)
+    files, junk_dirs = walk_tree(root, list(ignore_globs or ()) + si_globs)
     check_junk(root, files, junk_dirs, rep)
     check_abs_paths(root, files, rep)
     check_secrets(root, files, rep)
@@ -841,11 +921,19 @@ SEV_COLOR = {"P0": "\033[91m", "P1": "\033[93m", "P2": "\033[90m"}
 RESET = "\033[0m"
 
 
-def render(rep: Report, root: Path, show_p2=True, use_color=True, samples=3):
+def render(rep: Report, root: Path, show_p2=True, use_color=True, samples=3, show_noise=False):
     def paint(sev, s):
         return (SEV_COLOR[sev] + s + RESET) if use_color else s
 
-    findings = [f for f in rep.findings() if show_p2 or f["severity"] != "P2"]
+    findings, noise = [], 0
+    for f in rep.findings():
+        if not show_p2 and f["severity"] == "P2":
+            continue
+        # 示例路径/产物路径是知情项，默认折叠成一行计数，不再逐条刷屏
+        if not show_noise and f["rule"] in NOISE_RULES:
+            noise += len(f["hits"])
+            continue
+        findings.append(f)
     print("=" * 74)
     print("技能体检报告: %s" % root)
     print("=" * 74)
@@ -880,6 +968,10 @@ def render(rep: Report, root: Path, show_p2=True, use_color=True, samples=3):
     p0, p1, p2 = rep.count("P0"), rep.count("P1"), rep.count("P2")
     print("\n" + "-" * 74)
     print("汇总: P0=%d  P1=%d  P2=%d" % (p0, p1, p2))
+    if noise:
+        print("另有 %d 处「示例/产物路径」提示已折叠（目录下没有属正常，加 --show-noise 展开）" % noise)
+    if rep.ignored_hits:
+        print("按 .skillignore / --ignore-rule 放行了 %d 处" % rep.ignored_hits)
     if p0:
         print("结论: %s 禁止打包，先修 P0。" % paint("P0", "不通过"))
     elif p1:
@@ -889,43 +981,355 @@ def render(rep: Report, root: Path, show_p2=True, use_color=True, samples=3):
     print("-" * 74)
 
 
+# ------------------------------------------------------------------ 规则说明
+
+# 规则名 → (判什么, 为什么算问题, 怎么改, 怎么放行)
+RULES_DOC = {
+    "缺 SKILL.md": ("技能目录下必须有 SKILL.md", "没有它就不是技能，平台与本机都识别不了",
+                    "新建 SKILL.md：首行 `---`，frontmatter 里至少写 name 与 description", "不能放行"),
+    "缺 frontmatter": ("SKILL.md 必须以 `---` 开头并带 YAML frontmatter", "没有 frontmatter 就没有 name / description，技能不会被触发",
+                       "首行写 `---`，第二个 `---` 之前写 name / description 等字段", "不能放行"),
+    "缺 name": ("frontmatter 里要有 name", "name 与目录名一起决定技能被怎么定位",
+                "加一行 `name: <与目录名一致的小写连字符名>`", "不能放行"),
+    "缺 description": ("frontmatter 里要有 description", "模型靠 description 判断要不要触发这个技能",
+                       "写清三件事：做什么 / 何时触发 / 用户会怎么说", "不能放行"),
+    "description 含尖括号": ("description 里出现了 < 或 >", "市场校验会直接失败",
+                             "把 `<技能目录>` 这类占位换成方括号或中文书名号", "不能放行，必须替换"),
+    "SKILL.md 过长": ("SKILL.md 超过 30000 字符", "每次触发都要读进上下文，会把对话挤爆",
+                      "把字段表、踩坑细节、版本历史搬进 references/，正文只留流程骨架", "把细节外迁后自然消除"),
+    "SKILL.md 偏长": ("SKILL.md 超过 15000 字符", "同上，程度较轻",
+                      "考虑把细节拆进 references/，正文写明「什么时候需要读它」", "确认必要可留着"),
+    "引用缺失": ("正文里提到（反引号 / 链接 / 命令里）的文件在技能目录里找不到",
+                 "模型按正文去调文件会落空，技能跑不起来",
+                 "补齐这个文件，或修正正文里的路径", "确实是运行时产物就在同一行标注「输出文件」；确实要忽略写 .skillignore 的 `rule:引用缺失`"),
+    "约定/示例路径": ("正文提到的路径像是写作示例（含 xxx / your_ / 尖括号）或运行时产物",
+                     "只是知情项，目录下没有属正常", "不需要改；若确为真实依赖则补上", "默认已折叠，加 --show-noise 才展开"),
+    "疑似产物路径": ("技能内找不到这个裸文件名", "可能是运行后才生成的文件",
+                     "若是产物，在正文标注「输出文件」；若是依赖则补齐", "同上"),
+    "windows 盘符路径": ("代码或文档里写死了 C:\\ 这类盘符路径", "换台机器就跑不起来，还可能漏出内网结构",
+                         "代码改成 Path(__file__).resolve() / os.path.expanduser('~')；文档改成 `<技能目录>` 占位符",
+                         "占位示例加行尾 `# skill-audit: ignore`"),
+    "POSIX 家目录路径": ("写死了 /home/xxx、/Users/xxx", "同上", "同上", "同上"),
+    "明文凭据赋值": ("password / token / api_key 等关键字被赋了字面量", "别人拿到技能就等于拿到你的凭据",
+                     "外置成 config/xxx.example.json 空模板，真值放 ~/.workbuddy/<name>_config.json 或环境变量；已外泄的必须轮换",
+                     "不能放行（P0）"),
+    "递归删除目录": ("代码里出现 shutil.rmtree / os.remove / fs.rmSync", "删错目录就是不可逆事故",
+                     "把作用范围收窄（先校验目标确属自身目录），并在 SKILL.md 说明会清理什么",
+                     "范围已收窄时在该行行尾加 `# skill-audit: ignore`"),
+    "驱动浏览器": ("脚本会驱动浏览器 / 走 Chrome DevTools 协议", "属于外部副作用，要让用户知情",
+                   "在 SKILL.md 显式声明并说明凭据来源", "本就是知情项（P2）"),
+    "外部可执行文件": ("依赖 ffmpeg / edge-tts / 浏览器等外部程序", "使用者机器上没有就跑不起来",
+                       "在 SKILL.md 写「运行前提」：安装方式 + 检测方法 + 缺失时的行为", "补说明后仍在，属知情"),
+    "中文字体": ("渲染时用了中文字体", "别的机器缺字体会渲染成方块",
+                 "说明字体回退顺序与缺失表现", "补说明后仍在，属知情"),
+    "缺 example 模板": ("config/ 有真实配置但没有 .example 空模板", "使用者不知道要填哪些字段，容易把自己的配置传出去",
+                        "补 config/xxx.example.json：字段名留全、值留空", "补模板后消除"),
+    "模板含真实凭据": ("config 模板里出现了高置信度密钥", "等于把密钥写进了分发包",
+                       "模板里所有敏感字段留空字符串，并轮换已外泄的凭据", "不能放行（P0）"),
+    "缺 description_zh": ("frontmatter 缺中文一句话介绍", "平台上架必填，缺了会被打回",
+                          "补 `description_zh: 30 字以内的中文介绍`", "补字段后消除"),
+    "缺 description_en": ("frontmatter 缺英文一句话介绍", "同上", "补 `description_en: One-line English intro`", "补字段后消除"),
+    "缺 version": ("frontmatter 缺版本号", "上架必填，也让人分不清新旧",
+                   "补 `version: 1.0.0`；之后用 `python scripts/bump.py <技能目录>` 递增", "补字段后消除"),
+    "缺 displayName": ("缺驼峰 displayName（平台字段）", "平台只认驼峰；缺了不报错但商店里显示英文 slug（静默失败）",
+                       "补 `displayName: 中文展示名`（下划线 display_name 是本机字段，两者都写）", "补字段后消除"),
+    "category 不在平台枚举内": ("category 取值不在平台 13 个 key 里", "上架后显示「未分类」，等于少一个曝光入口",
+                                "改成枚举内的值，如 dev-programming", "改值后消除"),
+    "垃圾目录": ("目录里出现 .venv / node_modules / dist 等", "打进包会又大又带隐私",
+                 "打包时自动排除；若它其实是技能的一部分就改名", "打包已自动排除"),
+}
+
+
+def explain_rule(name: str) -> int:
+    d = RULES_DOC.get(name)
+    if not d:
+        print("没有收录「%s」这条规则的详细说明。" % name)
+        print()
+        print("拿准确规则名：python scripts/audit_skill.py <技能目录>")
+        print("看所有规则：  python scripts/audit_skill.py --explain 引用缺失   （换任意已收录名查看格式）")
+        print("规则名就是体检报告里 `- 文件` 下面那一行 `规则名 :: 样例` 的前半段。")
+        return 3
+    what, why, how, allow = d
+    print("=" * 74)
+    print("规则：%s" % name)
+    print("=" * 74)
+    print("  判什么：%s" % what)
+    print("  为什么：%s" % why)
+    print("  怎么改：%s" % how)
+    print("  怎么放行：%s" % allow)
+    print()
+    print("  临时不去管它：python scripts/audit_skill.py <技能目录> --ignore-rule %s" % name)
+    print("  永久放行：在技能根目录的 .skillignore 里写一行 `rule:%s`" % name)
+    return 0
+
+
+# ------------------------------------------------------------------ 自检
+
+# ⚠️ 这些"坏味道"必须在源码里**拆开写**。样例若原样写在源码里，
+# 体检器扫本技能自己时会把自己的样例当成真凭据（实测 P0=2），自检就永远失败。
+_SELFTEST_KEY = "sk-" + "abcdefghijklmnopqrstuvwxyz012345"
+_SELFTEST_KEY_NAME = "api" + "_key"
+_SELFTEST_RM = "rm" + "tree"
+_SELFTEST_PATH = "C:/" + "work/someone/secret/data"
+
+_BAD_SKILL_MD = '''---
+name: bad-skill-selftest
+description: "自检用的带病样例，故意包含各类应当被判定的问题。"
+---
+
+# 带病样例
+
+{keyname} = "{key}"
+work_dir = "{path}"
+import shutil; shutil.{rm}(target)
+'''.format(keyname=_SELFTEST_KEY_NAME, key=_SELFTEST_KEY,
+           path=_SELFTEST_PATH, rm=_SELFTEST_RM)
+
+_GOOD_SKILL_MD = '''---
+name: good-skill-selftest
+slug: good-skill-selftest
+description: "自检用的干净样例，不应被判定出任何阻断或警告项。"
+description_zh: "自检用的干净样例"
+description_en: "Clean sample used by selftest"
+version: 1.0.0
+displayName: 自检干净样例
+display_name: 自检干净样例
+display_name_en: Selftest Clean Sample
+summary: 自检用的干净样例
+category: dev-programming
+author: selftest
+tags: [selftest]
+agent_created: true
+---
+
+# 干净样例
+
+运行 `scripts/demo.py` 完成自检。
+'''
+
+
+def _build_tmp_skill(md_text: str, extra_files=()):
+    import shutil
+    import tempfile
+    d = Path(tempfile.mkdtemp(prefix="skill-audit-selftest-"))
+    (d / "SKILL.md").write_text(md_text, encoding="utf-8")
+    for rel in extra_files:
+        p = d / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("# 自检用\n", encoding="utf-8")
+    return d
+
+
+def selftest() -> int:
+    """验证体检器本身没坏：造一个带病样例、一个干净样例，再对自身跑一遍。
+
+    样例一律落在系统临时目录，**不写进技能目录** —— 否则假密钥会让本技能自己的体检报 P0。
+    """
+    import shutil
+
+    print("=" * 74)
+    print("体检器自检（样例建在系统临时目录，不写进技能目录）")
+    print("=" * 74)
+
+    results = []
+
+    def run_case(title, root, expect_p0, expect_p1, cleanup=True):
+        rep = audit(root, market=False)
+        p0, p1, p2 = rep.count("P0"), rep.count("P1"), rep.count("P2")
+        ok = (p0 >= expect_p0) and (p1 >= expect_p1)
+        results.append(ok)
+        print("\n[%s] %s  P0=%d P1=%d P2=%d  (期望 P0>=%d 且 P1>=%d)"
+              % ("OK" if ok else "X ", title, p0, p1, p2, expect_p0, expect_p1))
+        for f in rep.findings():
+            if f["severity"] in ("P0", "P1"):
+                print("      [%s] %s :: %s" % (f["severity"], f["rule"], (f["hits"][0]["sample"] or "")[:50]))
+        if cleanup:
+            shutil.rmtree(root, ignore_errors=True)  # skill-audit: ignore 只删自己刚建的临时目录
+        return ok
+
+    run_case("带病样例（应判出 P0 凭据 + P1 路径 + P1 危险操作）",
+             _build_tmp_skill(_BAD_SKILL_MD), 1, 2)
+
+    ok_clean = True
+    root = _build_tmp_skill(_GOOD_SKILL_MD, ("scripts/demo.py",))
+    rep = audit(root, market=True)
+    p0, p1, p2 = rep.count("P0"), rep.count("P1"), rep.count("P2")
+    ok_clean = (p0 == 0 and p1 == 0)
+    results.append(ok_clean)
+    print("\n[%s] 干净样例（应零 P0 零 P1）  P0=%d P1=%d P2=%d"
+          % ("OK" if ok_clean else "X ", p0, p1, p2))
+    for f in rep.findings():
+        if f["severity"] in ("P0", "P1"):
+            print("      [%s] %s :: %s" % (f["severity"], f["rule"], (f["hits"][0]["sample"] or "")[:50]))
+    shutil.rmtree(root, ignore_errors=True)  # skill-audit: ignore 只删自己刚建的临时目录
+
+    me = Path(__file__).resolve().parent.parent
+    rep = audit(me, market=True)
+    p0, p1, p2 = rep.count("P0"), rep.count("P1"), rep.count("P2")
+    ok_self = (p0 == 0 and p1 == 0)
+    results.append(ok_self)
+    print("\n[%s] 本技能自身（应零 P0 零 P1）  P0=%d P1=%d P2=%d" % ("OK" if ok_self else "X ", p0, p1, p2))
+
+    all_ok = all(results)
+    print("\n" + "-" * 74)
+    print("自检%s：%d/%d 项通过。" % ("通过" if all_ok else "失败", sum(1 for r in results if r), len(results)))
+    if not all_ok:
+        print("把上面的输出发给技能作者；体检器本身的判定逻辑可能被动过。")
+    print("-" * 74)
+    return 0 if all_ok else 1
+
+
+# ------------------------------------------------------------------ 半自动修复
+
+# 占位值一律**不用尖括号**：check_market 会把含 <> 的展示字段判成 P1。
+FIX_FIELDS = [
+    ("description_zh", "待填写：30 字以内的中文一句话介绍"),
+    ("description_en", "TODO: One-line English introduction"),
+    ("version", "1.0.0"),
+    ("displayName", "待填写：中文展示名"),
+    ("display_name", "待填写：中文展示名"),
+    ("display_name_en", "TODO: English Display Name"),
+    ("summary", None),                 # 复用 description_zh
+    ("category", "dev-programming"),
+    ("author", "待填写：署名"),
+    ("tags", "[技能]"),
+    ("slug", None),                    # 取 name（下面的分支处理）
+    ("agent_created", "true"),         # 缺了 skill_manage 后续改不动这个技能
+]
+
+
+def fix_skill(root: Path, write: bool = False) -> int:
+    """保守修复：只补 frontmatter 里缺失的字段（写之前先备份），绝不改正文。"""
+    import shutil
+    from _friendly import backup_root
+
+    skill_md = root / "SKILL.md"
+    if not skill_md.exists():
+        die(3, "目录里没有 SKILL.md：%s" % root, "确认这是技能目录")
+
+    content = read_text(skill_md) or ""
+    fm = parse_frontmatter(content)
+    if fm is None:
+        die(1, "frontmatter 缺失或未闭合，无法自动补字段",
+            "先手动补齐 `--- ... ---`，再跑 --fix")
+
+    name = fm_value(fm, "name") or root.name
+    zh = fm_text(fm, "description_zh") or ""
+    additions = []
+    for key, tpl in FIX_FIELDS:
+        if fm_text(fm, key) or fm_value(fm, key):
+            continue
+        val = zh if (key == "summary" and zh) else tpl
+        if key == "slug":
+            val = name
+        if val:
+            additions.append("%s: %s" % (key, val))
+
+    noise = [f for f in audit(root, market=True).findings() if f["rule"] in NOISE_RULES]
+
+    print("=" * 74)
+    print("半自动修复：%s" % root)
+    print("=" * 74)
+    if additions:
+        print("将补齐 %d 个 frontmatter 字段（占位值，写完记得替换）：" % len(additions))
+        for a in additions:
+            print("  + %s" % a)
+    else:
+        print("frontmatter 字段齐全，无需补。")
+
+    if noise:
+        total = sum(len(f["hits"]) for f in noise)
+        print("\n另有 %d 处「示例/产物路径」提示 —— 这是知情项不是错误，" % total)
+        print("若确认无需处理，可在技能根目录建 .skillignore 写一行：")
+        print("  rule:约定/示例路径")
+        print("  rule:疑似产物路径")
+
+    if not additions:
+        return 0
+
+    if not write:
+        print("\n[dry-run] 未落盘。确认无误后加 --write 写入（写之前会自动备份原文件）。")
+        return 0
+
+    from datetime import datetime
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    bak_dir = backup_root() / root.name
+    bak_dir.mkdir(parents=True, exist_ok=True)
+    bak = bak_dir / ("SKILL.md.%s" % stamp)
+    shutil.copy2(skill_md, bak)
+
+    m = re.match(r"^---\s*\n(.*?)\n---", content, re.DOTALL)
+    new_fm = m.group(1).rstrip() + "\n" + "\n".join(additions) + "\n"
+    new_content = content[:m.start(1)] + new_fm + content[m.end(1):]
+    skill_md.write_text(new_content, encoding="utf-8")
+    print("\n[OK] 已写入 %s" % skill_md)
+    print("     原文件备份在：%s" % bak)
+    print("     下一步：把占位值替换成真实内容，再跑一次体检。")
+    return 0
+
+
 def main():
-    try:
-        sys.stdout.reconfigure(encoding="utf-8")
-    except Exception:
-        pass
+    use_utf8_stdout()
 
     ap = argparse.ArgumentParser(description="技能打包前体检器")
-    ap.add_argument("skill_dir")
+    ap.add_argument("skill_dir", nargs="?",
+                    help="技能目录；用 --explain / --selftest 时可省略")
+    ap.add_argument("--ignore-rule", action="append", default=[], metavar="规则名",
+                    help="按规则名放行（可重复）；规则名见体检报告，含义用 --explain 查")
+    ap.add_argument("--show-noise", action="store_true",
+                    help="展开「示例/产物路径」这类低价值提示（默认折叠）")
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--hide-p2", action="store_true")
     ap.add_argument("--no-color", action="store_true")
     ap.add_argument("--market", action="store_true",
                     help="附加技能市场分发规范检查（frontmatter 必填字段、kebab-case name 等）")
     ap.add_argument("--samples", type=int, default=3, help="每类问题最多展示几条样例")
+    ap.add_argument("--explain", metavar="规则名", help="只打印某条规则的判据、改法与放行方式")
+    ap.add_argument("--selftest", action="store_true", help="自检体检器本身")
+    ap.add_argument("--fix", action="store_true", help="半自动修复：补齐缺失的 frontmatter 字段")
+    ap.add_argument("--write", action="store_true", help="配合 --fix 真正落盘（默认只打印建议）")
     args = ap.parse_args()
+
+    if args.selftest:
+        raise SystemExit(selftest())
+    if args.explain:
+        raise SystemExit(explain_rule(args.explain))
+
+    if not args.skill_dir:
+        print("[X] 缺少技能目录参数。")
+        print("    用法：python scripts/audit_skill.py <技能目录>")
+        print("    %s" % explain_exit(3))
+        raise SystemExit(3)
 
     root = Path(args.skill_dir).expanduser().resolve()
     if not root.is_dir():
-        print("目录不存在: %s" % root)
-        raise SystemExit(3)
+        die(3, "目录不存在或不是目录：%s" % root,
+            "确认路径拼写；路径含空格时要加引号；也可以先跑 --selftest 确认体检器正常")
 
-    rep = audit(root, market=args.market)
+    if args.fix:
+        raise SystemExit(fix_skill(root, write=args.write))
+
+    rep = audit(root, market=args.market, ignored_rules=args.ignore_rule)
     if args.json:
         print(json.dumps({
             "skill": str(root), "name": root.name, "market": args.market,
             "verdict": rep.worst,
             "summary": {"P0": rep.count("P0"), "P1": rep.count("P1"), "P2": rep.count("P2")},
+            "ignored_hits": rep.ignored_hits,
             "findings": rep.findings(),
         }, ensure_ascii=False, indent=2))
     else:
         render(rep, root, show_p2=not args.hide_p2,
-               use_color=not args.no_color, samples=args.samples)
+               use_color=not args.no_color, samples=args.samples,
+               show_noise=args.show_noise)
 
     if rep.count("P0"):
+        print(explain_exit(2))
         raise SystemExit(2)
     if rep.count("P1"):
+        print(explain_exit(1))
         raise SystemExit(1)
+    print(explain_exit(0))
     raise SystemExit(0)
 
 

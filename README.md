@@ -10,6 +10,8 @@
 - **上架字段缺斤少两** —— 自动补齐市场分发字段（`description_zh` / `description_en` / `version` / `author` 等）
 - **带病打包** —— 打包前自动体检 9 类风险，输出 P0 / P1 / P2 分级报告
 - **把不该发的东西发出去了** —— 硬编码路径、明文凭据、内网地址、个人数据自动识别并提示脱敏
+- **报错看不懂 / 规则太严** —— 报错带中文「怎么修」；规则可 `--explain` 查含义、`--ignore-rule` 按规则放行
+- **改了版本忘了写更新说明** —— `bump.py` 一条命令同时改 version 与版本历史
 
 ## 安装
 
@@ -43,23 +45,40 @@ python scripts/audit_skill.py <技能目录>
 python scripts/pack_skill.py <技能目录>
 ```
 
-## 两个脚本
+**退出码（四个脚本统一）**：`0` 成功 · `1` 有 P1 警告 · `2` 有 P0 阻断 · `3` 参数/目录错 · `4` 写入打包失败。
+非 0 退出时会打印「怎么修」，不用猜。
+
+## 五个脚本
 
 ### `new_skill.py` —— 生成骨架
 
 | 参数 | 说明 |
 |------|------|
-| `<skill_name>` | 技能名，kebab-case |
+| `<skill_name>` | 技能名，kebab-case（传中文会提示改用 `--display-name`） |
 | `--desc` / `--desc-zh` / `--desc-en` | 描述：做什么 / 何时触发 / 触发词 |
 | `--display-name` / `--display-name-en` | 展示名 |
 | `--triggers` | 逗号分隔的触发词 |
 | `--dirs` | 要创建的目录，默认 `scripts,references` |
-| `--deps` | 第三方依赖，会自动生成 `scripts/setup.py` |
+| `--deps` | 第三方依赖，会自动生成 `scripts/setup.py`（自带重试与国内镜像兜底） |
 | `--config-fields` | 配置字段，会生成 `config/settings.example.json` |
 | `--author` / `--category` | 署名与分类，署名默认读 `~/.workbuddy/USER.md` |
 | `--mode market\|local` | 按市场规范生成 / 本机自用 |
-| `--out` / `--install` / `--force` | 输出目录 / 直接安装 / 覆盖同名 |
+| `--out` / `--install` / `--force` | 输出目录 / 直接安装 / 覆盖同名（旧版先备份再替换） |
 | `--no-audit` / `--json` | 跳过体检 / 输出 JSON |
+
+### `audit_skill.py` —— 体检
+
+```bash
+python scripts/audit_skill.py <dir>                          # 人读报告
+python scripts/audit_skill.py <dir> --market                 # 追加市场分发规范检查（上架前用）
+python scripts/audit_skill.py <dir> --json                   # 机器读
+python scripts/audit_skill.py <dir> --hide-p2                # 只看要命的
+python scripts/audit_skill.py <dir> --ignore-rule 引用缺失   # 按规则放行（可重复）
+python scripts/audit_skill.py <dir> --show-noise             # 展开示例/产物路径提示（默认折叠）
+python scripts/audit_skill.py <dir> --fix [--write]          # 半自动补 frontmatter 字段
+python scripts/audit_skill.py --explain 引用缺失              # 这条规则判什么、怎么改、怎么放行
+python scripts/audit_skill.py --selftest                     # 自检体检器本身
+```
 
 ### `pack_skill.py` —— 体检 + 打包 + 安装
 
@@ -71,13 +90,40 @@ python scripts/pack_skill.py <dir> --no-market   # 跳过市场字段检查（�
 python scripts/pack_skill.py <dir> --dry-run     # 只看会打进哪些文件
 ```
 
+### `bump.py` —— 改版本号（v2.3.0 新增）
+
+```bash
+python scripts/bump.py <dir> -m "修了什么"          # 0.1.0 → 0.1.1，并在版本历史顶部插一条
+python scripts/bump.py <dir> --minor -m "加了什么"  # 次版本 +1
+python scripts/bump.py <dir> --set 3.0.0           # 直接指定
+python scripts/bump.py <dir> -m "说明" --dry-run   # 只看会改什么
+```
+
+### `make_icon.py` —— 技能图标（512×512 / ≤500KB）
+
+```bash
+python scripts/make_icon.py --prompt          # 拿 ImageGen 提示词
+python scripts/make_icon.py <生成图>           # 居中裁切 + 清生成标 + 压到 512×512 / ≤500KB
+python scripts/make_icon.py --check <图片>    # 上传前合规自查
+```
+
+图标**不进技能包、也不放进技能目录**（平台单独收；放进目录会让绑定仓库发布被拒）。
+完整流程见 `references/icon-guide.md`。
+
 ## 体检的 9 类风险
 
 结构完整性、绝对路径、明文凭据、危险操作、外部依赖、数据模板、文件引用完整性、体积垃圾、市场分发字段。
 
 分级：**P0 阻断**（真实凭据、破坏性操作）/ **P1 警告**（硬编码路径、外部依赖、引用缺失、缺市场必填字段）/ **P2 知情**（命名规范、外部副作用、运行时数据、垃圾文件）。
 
-放行方式：对应行尾加 `# skill-audit: ignore`，或在技能根目录放 `.skillignore`。
+放行方式，四选一：
+
+| 方式 | 适用 |
+|---|---|
+| `# skill-audit: ignore` | 单行（必须加在被判定的那一行行尾） |
+| `.skillignore` 写 glob | 整个文件或目录不参与体检与打包 |
+| `.skillignore` 写 `rule:规则名` | 按规则永久放行 |
+| `--ignore-rule 规则名` | 临时放行，不改文件 |
 
 ## 产出形态，别搞混
 
@@ -90,16 +136,22 @@ python scripts/pack_skill.py <dir> --dry-run     # 只看会打进哪些文件
 
 ```
 ym-skill-generator/
-├── SKILL.md                      # 技能主文档（完整工作流）
+├── SKILL.md                      # 技能主文档（完整工作流，约 14.5k 字符）
 ├── references/
-│   ├── checklist.md              # 交付前检查清单
+│   ├── checklist.md              # 逐项判定标准与放行条件
 │   ├── generation-guide.md       # 骨架生成指引
 │   ├── naming-and-discovery.md   # 命名与可发现性
-│   └── sanitize-rules.md         # 脱敏规则
+│   ├── sanitize-rules.md         # 脱敏规则
+│   ├── icon-guide.md             # 图标流程（512×512 / ≤500KB）
+│   ├── publishing.md             # 发布 ≠ 上线、插件形态包、上架阶段的两个坑
+│   ├── pitfalls.md               # 低频坑（打包/上架报错时再查）
+│   └── CHANGELOG.md              # 完整版本历史（正文只留最近两版）
 ├── scripts/
+│   ├── _friendly.py              # 共用：中文报错、统一退出码、备份、pip 重试（v2.3.0 新增）
 │   ├── new_skill.py              # 生成骨架
-│   ├── audit_skill.py            # 体检
+│   ├── audit_skill.py            # 体检（含 --explain / --ignore-rule / --fix / --selftest）
 │   ├── pack_skill.py             # 打包 + 安装
+│   ├── bump.py                   # 递增版本 + 写版本历史（v2.3.0 新增）
 │   ├── make_icon.py              # 技能图标（512×512 / ≤500KB）
 │   └── setup.py                  # 环境自检（Pillow 为可选依赖）
 └── templates/
@@ -111,7 +163,7 @@ ym-skill-generator/
 核心功能**纯 Python 标准库**，无需安装任何第三方包。
 
 仅「技能图标」能力需要 **Pillow**（可选）：跑 `python scripts/setup.py` 自检，
-或 `python scripts/setup.py --install-pillow` 一键安装。
+或 `python scripts/setup.py --install-pillow` 一键安装（失败会自动重试并改用国内镜像）。
 
 ## 相关项目
 

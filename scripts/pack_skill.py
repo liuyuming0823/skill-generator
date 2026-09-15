@@ -65,6 +65,7 @@ from pathlib import Path
 
 sys.dont_write_bytecode = True          # 体检/打包不该在技能目录里留 __pycache__
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _friendly import die, explain_exit, make_backup, use_utf8_stdout  # noqa: E402
 from audit_skill import JUNK_DIRS, JUNK_FILES, JUNK_SUFFIX, audit  # noqa: E402
 
 # 技能市场分发规范字段：(字段名, 是否硬性)
@@ -126,16 +127,23 @@ def market_field_report(root: Path):
 def collect_packable(root: Path):
     """返回 (要打包的文件列表, 被排除的垃圾列表, 被排除的图标文件列表)。
 
-    排除三类：构建缓存（JUNK_*）、仓库元数据（`.gitignore` / `README.md`…）、
-    发布图标（`icons/`）。后两类不是「垃圾」，是**不该进技能包**——图标由平台
-    在「图标」处单独收，仓库元数据只对 git 有意义。
+    排除四类：构建缓存（JUNK_*）、仓库元数据（`.gitignore` / `README.md`…）、
+    发布图标（`icons/`）、以及 `.skillignore` 里指定的文件。
+    前三类不是「垃圾」，是**不该进技能包**——图标由平台在「图标」处单独收，
+    仓库元数据只对 git 有意义。
     """
+    from audit_skill import _ignored_by_glob, load_skillignore
+    si_globs, _ = load_skillignore(root)
+
     keep, dropped, icons = [], [], []
     for dirpath, dirnames, filenames in os.walk(root):
         d = Path(dirpath)
         keepdirs = []
         for dn in dirnames:
-            if dn in JUNK_DIRS or dn in REPO_META_DIRS:
+            if si_globs and _ignored_by_glob(
+                    str((d / dn).relative_to(root)).replace("\\", "/"), si_globs):
+                dropped.append(d / dn)
+            elif dn in JUNK_DIRS or dn in REPO_META_DIRS:
                 dropped.append(d / dn)
             elif dn in ICON_DIRS:
                 for sub in sorted((d / dn).rglob("*")):
@@ -146,7 +154,10 @@ def collect_packable(root: Path):
         dirnames[:] = keepdirs
         for fn in filenames:
             p = d / fn
-            if fn in JUNK_FILES or p.suffix.lower() in JUNK_SUFFIX:
+            if si_globs and _ignored_by_glob(
+                    str(p.relative_to(root)).replace("\\", "/"), si_globs):
+                dropped.append(p)
+            elif fn in JUNK_FILES or p.suffix.lower() in JUNK_SUFFIX:
                 dropped.append(p)
             elif fn in REPO_META_FILES:
                 dropped.append(p)
@@ -325,8 +336,9 @@ def install_skill(root: Path, target_dir: Path, name: str, force: bool, files, e
             print("!! 源目录即目标目录，拒绝覆盖：%s" % target)
             return None
         print("!! 覆盖已有技能目录：%s" % target)
-        # 作用范围已确认：仅删除 --install-dir 下的同名技能目录，且需显式 --force
-        shutil.rmtree(target, ignore_errors=True)  # skill-audit: ignore 范围受限于目标技能目录且需 --force
+        # 先备份再覆盖：旧版直接 rmtree，复制中途失败本机技能就没了
+        bak = make_backup(target)
+        print("   旧版已备份到：%s" % bak)
     target.mkdir(parents=True, exist_ok=True)
     for f in files:
         rel = f.relative_to(root)
@@ -339,10 +351,7 @@ def install_skill(root: Path, target_dir: Path, name: str, force: bool, files, e
 
 
 def main():
-    try:
-        sys.stdout.reconfigure(encoding="utf-8")
-    except Exception:
-        pass
+    use_utf8_stdout()
 
     ap = argparse.ArgumentParser(description="技能校验 + 打包 + 安装")
     ap.add_argument("skill_dir")
@@ -371,11 +380,11 @@ def main():
 
     root = Path(args.skill_dir).expanduser().resolve()
     if not root.is_dir():
-        print("技能目录不存在: %s" % root)
-        raise SystemExit(3)
+        die(3, "技能目录不存在或不是目录：%s" % root,
+            "确认路径拼写；含空格要加引号；也可以先跑 audit_skill.py --selftest 确认环境正常")
     if not (root / "SKILL.md").exists():
-        print("目标目录里没有 SKILL.md，不是技能目录: %s" % root)
-        raise SystemExit(3)
+        die(3, "目标目录里没有 SKILL.md，不是技能目录：%s" % root,
+            "要么进错目录了，要么技能还没建；先用 new_skill.py 生成骨架")
 
     # ---------- 1. 体检 ----------
     print("[1/4] 体检 ...%s" % ("  模式：技能市场分发规范" if args.market else ""))
@@ -404,6 +413,7 @@ def main():
             if f["hint"]:
                 print("      改法: %s" % f["hint"])
             print()
+        print("    %s" % explain_exit(2))
         raise SystemExit(2)
 
     if p1 and not args.allow_p1:
@@ -419,6 +429,7 @@ def main():
                 print("      样例: %s" % hits[0]["sample"])
             if f["hint"]:
                 print("      改法: %s" % f["hint"])
+        print("    %s" % explain_exit(1))
         raise SystemExit(1)
 
     if p1:
@@ -474,8 +485,8 @@ def main():
         else:
             zip_path = build_zip(root, out_dir, files, name, empties)
     except Exception as e:
-        print("打包失败: %s" % e)
-        raise SystemExit(4)
+        die(4, "打包失败：%s" % root.name,
+            "确认输出目录可写、磁盘有空间；zip 同名文件没被占用", exc=e)
     print("      -> %s" % zip_path)
     if args.platform:
         print("      结构：%s.codebuddy-plugin/plugin.json + %sskills/%s/..."

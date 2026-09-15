@@ -64,6 +64,7 @@ from pathlib import Path
 
 sys.dont_write_bytecode = True          # 不留 __pycache__
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _friendly import die, explain_exit, make_backup, use_utf8_stdout  # noqa: E402
 
 DEFAULT_PARENT = Path.home() / ".workbuddy" / "skills"
 DEFAULT_NAME_PREFIX = "ym-"      # 命名约定：本机自建技能统一 ym- 开头（ym = 玉明）
@@ -123,7 +124,9 @@ def install_copy(src: Path, name: str, force: bool):
         if not (dest / "SKILL.md").exists():
             print("安装跳过 : %s 已存在且不含 SKILL.md，拒绝覆盖" % dest)
             return None
-        shutil.rmtree(dest)  # skill-audit: ignore 仅在 --force 且目标含 SKILL.md 时触发
+        # 先备份再覆盖：旧版是 rmtree 后 copytree，中途失败本机技能就没了
+        bak = make_backup(dest)
+        print("安装     : 旧版已备份到 %s" % bak)
     dest.parent.mkdir(parents=True, exist_ok=True)
     shutil.copytree(src, dest)
     return dest
@@ -244,17 +247,43 @@ SETUP_PY = '''#!/usr/bin/env python3
 
 import subprocess
 import sys
+import time
 
 PACKAGES = [{pkgs}]
+MIRROR = "https://pypi.tuna.tsinghua.edu.cn/simple"
+RETRIES = 3
+TIMEOUT = 180
+
+
+def run(cmd):
+    try:
+        r = subprocess.run(cmd, timeout=TIMEOUT)
+    except (subprocess.TimeoutExpired, OSError):
+        return False
+    return r.returncode == 0
 
 
 def main() -> int:
     if not PACKAGES:
         print("无第三方依赖，无需安装。")
         return 0
-    cmd = [sys.executable, "-m", "pip", "install", *PACKAGES]
-    print("执行：" + " ".join(cmd))
-    return subprocess.call(cmd)
+    # 三种装法依次兜底：直连 → 裸 pip（部分环境下 `python -m pip` 会异常退出）→ 国内镜像
+    attempts = [[sys.executable, "-m", "pip", "install", *PACKAGES],
+                ["pip", "install", *PACKAGES],
+                [sys.executable, "-m", "pip", "install", "-i", MIRROR, *PACKAGES]]
+    for i in range(RETRIES):
+        for cmd in attempts:
+            print("执行：" + " ".join(cmd))
+            if run(cmd):
+                print("[OK] 依赖安装完成。")
+                return 0
+            print("    没成功，换下一种方式重试 …")
+        if i < RETRIES - 1:
+            time.sleep(2 * (i + 1))
+    print("[X] 自动安装失败，请手动执行下面任意一条：")
+    print("    " + " ".join(attempts[0]))
+    print("    " + " ".join(attempts[-1]))
+    return 1
 
 
 if __name__ == "__main__":
@@ -280,6 +309,12 @@ def build_config_example(name: str, fields) -> str:
 # ----------------------------------------------------------------- 主流程
 
 def write_all(target: Path, a, name: str, dirs, deps, fields, force: bool):
+    """先建临时目录，全部写成功后再替换目标。
+
+    旧实现是**先把目标目录整个删掉再重建**：中途任何一步失败（权限、磁盘满、
+    文件被占用），旧技能已经没了。改成「临时目录 + 备份 + 原子替换」之后，
+    失败时旧目录原封不动。
+    """
     created = []
     if target.exists():
         if not force:
@@ -287,37 +322,46 @@ def write_all(target: Path, a, name: str, dirs, deps, fields, force: bool):
         if not (target / "SKILL.md").exists():
             # 只覆盖「看起来确实是技能目录」的目录，避免误删无关文件夹
             raise ValueError("目标已存在且不含 SKILL.md，拒绝覆盖：%s" % target)
-        # skill-audit: ignore 仅覆盖目标技能目录，且要求该目录含 SKILL.md 且显式 --force
-        shutil.rmtree(target)  # skill-audit: ignore 同上
-        created.append("(覆盖) %s" % target)
 
-    target.mkdir(parents=True, exist_ok=False)
-    (target / "SKILL.md").write_text(
-        build_frontmatter(a, name, dirs, deps) + "\n\n" + build_body(a, name, dirs, deps),
-        encoding="utf-8")
-    created.append("SKILL.md")
+    tmp = target.parent / (".%s.tmp-%d" % (target.name, os.getpid()))
+    if tmp.exists():
+        shutil.rmtree(tmp, ignore_errors=True)  # skill-audit: ignore 只清理自己刚建的临时目录
+    tmp.mkdir(parents=True)
+    try:
+        (tmp / "SKILL.md").write_text(
+            build_frontmatter(a, name, dirs, deps) + "\n\n" + build_body(a, name, dirs, deps),
+            encoding="utf-8")
+        created.append("SKILL.md")
 
-    for d in dirs:
-        (target / d).mkdir(parents=True, exist_ok=True)
-        created.append("%s/" % d)
+        for d in dirs:
+            (tmp / d).mkdir(parents=True, exist_ok=True)
+            created.append("%s/" % d)
 
-    if deps and "scripts" in dirs:
-        (target / "scripts" / "setup.py").write_text(build_setup_py(name, deps), encoding="utf-8")
-        created.append("scripts/setup.py")
+        if deps and "scripts" in dirs:
+            (tmp / "scripts" / "setup.py").write_text(
+                build_setup_py(name, deps), encoding="utf-8")
+            created.append("scripts/setup.py")
 
-    if fields and "config" in dirs:
-        (target / "config" / "settings.example.json").write_text(
-            build_config_example(name, fields), encoding="utf-8")
-        created.append("config/settings.example.json")
+        if fields and "config" in dirs:
+            (tmp / "config" / "settings.example.json").write_text(
+                build_config_example(name, fields), encoding="utf-8")
+            created.append("config/settings.example.json")
+
+        backup = None
+        if target.exists():
+            backup = make_backup(target)      # 先备份旧版，再让新版就位
+        tmp.rename(target)
+        if backup:
+            created.append("(覆盖) 旧版已备份到 %s" % backup)
+    except BaseException:
+        shutil.rmtree(tmp, ignore_errors=True)  # skill-audit: ignore 同上，回滚半成品
+        raise
 
     return created
 
 
 def main() -> int:
-    try:
-        sys.stdout.reconfigure(encoding="utf-8")
-    except Exception:
-        pass
+    use_utf8_stdout()
 
     ap = argparse.ArgumentParser(description="从需求生成合规的技能骨架")
     ap.add_argument("skill_name")
@@ -350,8 +394,14 @@ def main() -> int:
     raw_name = args.skill_name.strip().lower()
     name = normalize_name(args.skill_name)
     if not name or not VALID_NAME.match(name) or len(name) > 64:
-        print("技能名非法：%r（要求小写字母开头，只含小写字母/数字/连字符）" % args.skill_name)
-        return 3
+        if re.search(r"[\u4e00-\u9fff]", args.skill_name):
+            how = ("目录名只能用英文（平台硬要求），中文名请用 --display-name \"%s\" 单独给；"
+                   "例如：new_skill.py oa-todo --display-name \"%s\""
+                   % (args.skill_name, args.skill_name))
+        else:
+            how = ("目录名要求：小写字母开头，只含小写字母 / 数字 / 连字符，长度 ≤ 64；"
+                   "例如 oa-todo、pdf-tools。中文展示名用 --display-name 单独给")
+        die(3, "这个名字不能当目录名：%r" % args.skill_name, how)
     if name != raw_name:
         print("技能名已规整：%r -> %r" % (args.skill_name, name))
 
@@ -368,8 +418,8 @@ def main() -> int:
     dirs = [d.strip() for d in args.dirs.split(",") if d.strip()]
     unknown = [d for d in dirs if d not in KNOWN_DIRS]
     if unknown:
-        print("未知子目录：%s（可选：%s）" % (", ".join(unknown), ", ".join(KNOWN_DIRS)))
-        return 3
+        die(3, "未知子目录：%s" % ", ".join(unknown),
+            "可选值只有：%s；不认识的目录不建，避免事后发现放错地方" % ", ".join(KNOWN_DIRS))
     deps = [d.strip() for d in args.deps.split(",") if d.strip()]
     fields = [f.strip() for f in args.config_fields.split(",") if f.strip()]
     if fields and "config" not in dirs:
@@ -391,8 +441,10 @@ def main() -> int:
         miss = [t for t in triggers if t not in args.desc]
         if miss:
             args.desc = args.desc.rstrip() + " 也适用于「%s」这类说法。" % "」「".join(miss)
-    args.desc_zh = args.desc_zh or "<30 字以内的中文一句话介绍>"
-    args.desc_en = args.desc_en or "<One-line English introduction>"
+    # 占位值一律**不用尖括号**：check_market 会把含 <> 的展示字段判成 P1，
+    # 于是「生成即体检」每次都报两条 P1 —— 骨架还没填内容就先红一次。
+    args.desc_zh = args.desc_zh or "待填写：30 字以内的中文一句话介绍"
+    args.desc_en = args.desc_en or "TODO: One-line English introduction"
 
     parent = Path(args.out).expanduser().resolve() if args.out else DEFAULT_PARENT
     target = parent / name
@@ -403,14 +455,12 @@ def main() -> int:
     try:
         created = write_all(target, args, name, dirs, deps, fields, args.force)
     except FileExistsError:
-        print("目标已存在：%s\n如确认覆盖，加 --force（仅会覆盖含 SKILL.md 的技能目录）" % target)
-        return 3
+        die(3, "目标已存在：%s" % target,
+            "确认覆盖加 --force（只会覆盖含 SKILL.md 的技能目录；覆盖前旧版会自动备份）")
     except ValueError as e:
-        print(str(e))
-        return 3
+        die(3, str(e), "换一个技能名，或确认它真是技能目录后加 --force")
     except OSError as e:
-        print("写入失败：%s" % e)
-        return 4
+        die(4, "写入失败：%s" % target, "", exc=e)
 
     print("已创建   : %s" % "、".join(created))
 
@@ -449,10 +499,14 @@ def main() -> int:
         print("   要立刻可用，重跑时加 --install，或去掉 --out 用默认目录。")
 
     print("\n下一步：")
-    print("  1. 打开 %s，把 <...> 占位全部替换成真实内容" % (target / "SKILL.md"))
+    print("  1. 打开 %s，把「待填写 / TODO」占位全部替换成真实内容" % (target / "SKILL.md"))
     print("  2. 补上「常见坑」——把本次实现踩到的坑写进去")
     print("  3. python scripts/audit_skill.py \"%s\" --market" % target)
     print("  4. python scripts/pack_skill.py \"%s\"" % target)
+    print("  （改版本号用 python scripts/bump.py \"%s\" -m \"说明\"）" % target)
+
+    if verdict:
+        print("\n" + explain_exit(verdict))
 
     if args.json:
         print(json.dumps({"name": name, "path": str(target),

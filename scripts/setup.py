@@ -13,16 +13,11 @@
 from __future__ import annotations
 
 import importlib.util
-import subprocess
 import sys
 from pathlib import Path
 
-
-def use_utf8_stdout() -> None:
-    try:
-        sys.stdout.reconfigure(encoding="utf-8")
-    except Exception:
-        pass
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _friendly import explain_exit, pip_install, use_utf8_stdout  # noqa: E402
 
 
 def has(module: str) -> bool:
@@ -59,20 +54,25 @@ def main() -> int:
         print("     · 只有生成技能图标时才需要它：python scripts/setup.py --install-pillow")
         print("     · 不装也能生成 / 体检 / 打包，只是图标要自己压到 512×512 且 ≤500KB")
 
+    code = 0 if ok else 1
     if "--install-pillow" in argv and not pillow_ok:
-        print("\n正在安装 Pillow …")
-        try:
-            subprocess.check_call([sys.executable, "-m", "pip", "install", "Pillow"])
-        except subprocess.CalledProcessError:
-            print("[X] 安装失败。可手动执行：python -m pip install Pillow")
-            return 1
-        print("[OK] Pillow 安装完成")
+        print("\n正在安装 Pillow（失败会自动重试并改用国内镜像）…")
+        ok_pip, log = pip_install(["Pillow"])
+        for line in log:
+            print("    · %s" % line)
+        if ok_pip:
+            print("[OK] Pillow 安装完成")
+        else:
+            print("[X] 自动安装失败。手动装任意一条即可：")
+            print("    python -m pip install Pillow")
+            print("    python -m pip install -i https://pypi.tuna.tsinghua.edu.cn/simple Pillow")
+            code = 4
     elif "--install-pillow" in argv:
         print("\nPillow 已存在，无需安装。")
 
     print("─" * 52)
     print("环境就绪。" if ok else "请先解决上面的 [X] 项。")
-    return 0 if ok else 1
+    return code
 
 
 if __name__ == "__main__":

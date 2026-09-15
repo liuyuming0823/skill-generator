@@ -398,4 +398,7 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    code = main()
+    if code:
+        print("    退出码 1：图标处理未完成 —— 按上面的提示处理后再跑一次。")
+    raise SystemExit(code)
