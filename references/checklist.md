@@ -192,6 +192,16 @@ P1 类的处理不是删掉，而是**把范围讲清楚**：SKILL.md 里写明�
 
 **例外是 `displayName`（定 P1）**：判据不是"规范说必填"，而是**它的缺失是静默的** —— 发布成功、不报任何错，只是商店列表里显示英文 slug。`description_zh` 那类缺了顶多少句介绍，`displayName` 缺了是"我的技能没有中文名"，必须拦。同理，块标量被平台读成 `>-`、`category` 落到「未分类」也都是静默失败，所以各加一条 P2 提示。
 
+> ⚠️ **`category` 有第二条坑：CLI 发布根本传不了它。**
+> SkillHub CLI 的发布 payload 固定只有 `slug` / `version` / `displayName` / `summary` /
+> `description` / `tags` / `license` / `homepage` / `changelog` —— **没有 `category`**。
+> 所以「SKILL.md 里分类填对了」只保证**体检能过**，**不保证线上分类会对**，改分类只能走网页 dashboard。
+> 发布后复核：`GET /api/v1/skills/<slug>` 看 `skill.category`。
+>
+> 同理，**`✓ Published` ≠ 已上线**：`tags` 秒级生效，`version` / `summary` / 描述 / 版本列表 /
+> 下载包要等三线安全审核通过才写进 `latestVersion`。发完立刻看商店「没变化」属正常，
+> 先查 `GET /api/v1/skills/<slug>/versions` 确认新版本号在不在列表里。
+
 > ⚠️ 但官方文档把 `version` / `author` 也列为**必填**。实测有已上架技能缺 `author`，
 > 说明解析阶段未必强卡；**一旦上传被字段校验拦下，先把这 5 个必填补齐再传**。
 > `version` 已按 P1 处理，`author` 暂居 P2。

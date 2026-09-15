@@ -66,7 +66,7 @@ skill备份、skill迁移、skill导出、skill打包时触发。
 5. `description` 是否穷举了同义说法（中文 + 英文）
 6. `description_zh` 是否含中文（平台会校验语言是否匹配）
 7. 四个展示字段里都不能有 `<` `>`（市场校验会直接失败）
-8. `category` 是否落在平台枚举内——**枚举值需向平台确认，不要凭感觉填**
+8. `category` 是否落在平台枚举内——**枚举值需向平台确认，不要凭感觉填**（另注：CLI 发布 payload 不含 `category`，改分类要走网页 dashboard，见 `checklist.md`）
 9. 中文触发词全部放进 `description`，不要指望 `name` 承载中文搜索
 
 ## 五、一个反直觉的结论

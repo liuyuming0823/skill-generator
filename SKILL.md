@@ -9,7 +9,7 @@ description_zh: 按需求生成技能骨架，体检脱敏后打包成可上架�
 description_en: Generate, audit, sanitize and package agent skills into publishable bundles
 summary: 按需求生成技能骨架，或把已有实现体检、脱敏后打包成可分发、可上架的技能包
 category: dev-programming
-version: 2.2.0
+version: 2.2.1
 author: 刘玉明
 tags: [技能生成, 技能打包, 技能体检, 技能上架, skill]
 trigger:
@@ -388,6 +388,30 @@ zip 顶层目录 = 技能名。
 
 安装后技能即刻就绪；若未出现在可用列表，重启会话即可被识别。
 
+### 发布 ≠ 上线：线上字段分三档更新
+
+上架动作是 `skillhub publish <技能目录> --changelog "..."`（网页发布等价）。**命令返回成功只代表「平台已受理」**，
+商店里的字段不是一次性全变，实测分三档：
+
+| 档位 | 字段 | 时机 |
+|---|---|---|
+| **立即** | `tags` | 秒级生效（skill 级索引，不等审核） |
+| **随审核** | `version` / `summary` / `description` / 版本列表 / 下载包 | 只有**审核通过**的版本才写进 `latestVersion` |
+| **CLI 改不了** | `category` | **发布 payload 里没有这个字段**，只能去网页 dashboard 改 |
+
+判定「是否真的上线」看**版本列表里有没有刚发的版本号**，不要看命令返回值。`stats.versions` 会把待审版本也计入，
+所以「计数涨了但列表没动」= 正在审核。
+
+只读查询接口（无需登录，用来复核发布结果）：
+
+```bash
+GET https://api.skillhub.cn/api/v1/skills/<slug>                               # latestVersion / summary / category / stats.versions
+GET https://api.skillhub.cn/api/v1/skills/<slug>/versions?page=1&pageSize=20   # 各版本 + 过审后的安全报告
+GET https://api.skillhub.cn/api/v1/download?slug=<slug>                        # 看 Content-Disposition 的 filename 是哪个版本
+```
+
+反面写法别踩：`/api/v1/skills/@handle/slug` 返回 **405**，`/api/v1/skills/resolve?slug=` 返回 **400**。
+
 ## Step 9 · 技能图标（发布时单独用，**必须放在技能目录之外**）
 
 平台创建技能时要求一张图标：**512×512、PNG 或 JPG、≤500KB**。
@@ -482,7 +506,24 @@ python scripts/make_icon.py --check ~/.workbuddy/skill-icons/*.png
 
 21. **frontmatter 里写行尾 `#` 注释** —— 平台的简易解析器**不剥行尾注释**，注释会被拼进字段值（`category: development  # 分类` 读出来就是整个字符串，于是「未分类」）。注释一律**单独成行**写在字段上方，发布前也记得把整行注释删干净。
 
+22. **以为 CLI 发布能把分类一起改掉** —— SkillHub CLI 的发布 payload 固定只有 `slug` / `version` / `displayName` / `summary` / `description` / `tags` / `license` / `homepage` / `changelog` 九个键，**没有 `category`**。于是出现最迷惑的一幕：SKILL.md 里分类写对了、CLI 也返回 `✓ Published`，线上分类纹丝不动。改分类只能走**网页 dashboard**；发布后用 `GET /api/v1/skills/<slug>` 复核 `skill.category`。
+
+23. **拿 `✓ Published` 当「已经上线」** —— 返回成功只表示平台**已受理**。实测线上字段分三档：`tags` 秒级生效；`version` / `summary` / 描述 / 版本列表 / 下载包要等**三线安全审核**（内容合规 + 科恩漏洞扫描 + 云鼎 AI 安全评估）通过才写进 `latestVersion`；`category` 走 CLI 永远不变。所以发完立刻去商店看「没变化」是正常的，别急着重发——先查版本列表确认新版本号在不在。
+
 ## 版本历史
+
+### v2.2.1 (2026-09-15)
+
+- **补「发布后核查」实战结论**（发布 v2.2.0 时实测）：
+  - CLI 的发布 payload 固定只有 9 个键，**不含 `category`** —— SKILL.md 里分类改对了、
+    CLI 也返回 `✓ Published`，线上分类依旧不变，**只能走网页 dashboard 改**。
+  - 线上字段分三档更新：`tags` 秒级生效；`version` / `summary` / 描述 / 版本列表 / 下载包
+    要等三线安全审核通过；`category` 走 CLI 永远不动。
+- Step 8 新增「发布 ≠ 上线」小节：三档更新表 + 三个免登录只读状态接口
+  （`/api/v1/skills/<slug>`、`/versions`、`/download`），并标出两个会踩的路径
+  （`/skills/@handle/slug` → 405，`/skills/resolve?slug=` → 400）。
+- 新增坑 22（以为 CLI 能改分类）、坑 23（拿 `✓ Published` 当已上线）。
+- `references/checklist.md` 同步补「`category` 有第二条坑：CLI 传不了它」。
 
 ### v2.2.0 (2026-09-15)
 
