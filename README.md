@@ -98,7 +98,7 @@ skill-generator/
 │   ├── audit_skill.py            # 体检
 │   └── pack_skill.py             # 打包 + 安装
 └── templates/
-    └── SKILL.md.template         # SKILL.md 骨架模板
+    └── skill-skeleton.md         # SKILL.md 骨架模板
 ```
 
 ## 依赖

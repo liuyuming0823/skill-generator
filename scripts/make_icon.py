@@ -20,23 +20,40 @@
   · 生成图右下角带「AI生成 / WORKBUDDY」标，落在圆角方块**外侧**的背景上。
     —— `--clean` 用周围背景平滑重建那一小块，不碰主体；检测不到就不动。
 
-⚠️ 图标**不进技能包**：默认输出到 <技能根>/icons/，打包器打包时一律排除它。
-   发布时在开放平台的「图标」处单独提交这个文件，不要塞进 zip。
+⚠️ 图标必须落在**技能目录之外**（默认 ~/.workbuddy/skill-icons/，可用 --out 或
+   环境变量 SKILLHUB_ICON_DIR 覆盖）。技能目录通常同时是 GitHub 仓库，而 SkillHub
+   绑定仓库发布时按「文件类型白名单」过滤，裸 .png 会被直接拒收（报「不支持的
+   文件类型」）。图标本来就该走平台图标入口单独提交，不要塞进技能包。
 
 依赖 Pillow（可选）。未安装时给出提示，不会擅自安装。
 """
 
 from __future__ import annotations
 
+import os
 import re
 import sys
 from pathlib import Path
 
 SKILL_ROOT = Path(__file__).resolve().parent.parent
-ICON_DIRNAME = "icons"
 SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
 ICON_SIZE = 512
 MAX_KB = 500
+
+# 图标默认落到**技能目录之外**。原因：技能目录通常同时是 GitHub 仓库，而 SkillHub
+# 绑定仓库发布时按「文件类型白名单」过滤文件，裸 .png 会被直接拒收
+# （报「不支持的文件类型: icons/xxx-icon.png」）。图标本来就该走平台图标入口
+# 单独提交，放在技能目录里只会把发布卡住。
+DEFAULT_ICON_DIRNAME = "skill-icons"
+ICON_DIR_ENV = "SKILLHUB_ICON_DIR"
+
+
+def default_icon_dir() -> Path:
+    """图标默认输出目录：环境变量 SKILLHUB_ICON_DIR 优先，否则 ~/.workbuddy/skill-icons/。"""
+    env = os.environ.get(ICON_DIR_ENV, "").strip()
+    if env:
+        return Path(env).expanduser()
+    return Path.home() / ".workbuddy" / DEFAULT_ICON_DIRNAME
 
 
 def use_utf8_stdout() -> None:
@@ -267,7 +284,8 @@ def main() -> int:
     ap.add_argument("--prompt", action="store_true", help="只打印给 ImageGen 用的提示词")
     ap.add_argument("--lang", choices=("zh", "en"), default="zh", help="提示词语言（默认 zh）")
     ap.add_argument("--check", action="store_true", help="只校验合规性，不改动文件")
-    ap.add_argument("--out", default=None, help=f"输出目录（默认 <技能根>/{ICON_DIRNAME}/）")
+    ap.add_argument("--out", default=None,
+                    help=f"输出目录（默认 {default_icon_dir()}，可用环境变量 {ICON_DIR_ENV} 覆盖）")
     ap.add_argument("--name", default=None, help="输出文件名前缀（默认取 SKILL.md 的 name）")
     ap.add_argument("--fmt", choices=("png", "jpg"), default="png", help="优先输出的格式")
     ap.add_argument("--size", type=int, default=ICON_SIZE, help=f"目标边长（默认 {ICON_SIZE}）")
@@ -281,7 +299,7 @@ def main() -> int:
     args = ap.parse_args()
 
     size, max_kb, fmt = args.size, args.max_kb, args.fmt
-    out_dir = Path(args.out).expanduser() if args.out else SKILL_ROOT / ICON_DIRNAME
+    out_dir = Path(args.out).expanduser() if args.out else default_icon_dir()
     icon_name = args.name or (read_frontmatter(SKILL_ROOT / "SKILL.md").get("name")
                               or SKILL_ROOT.name)
 
@@ -331,7 +349,7 @@ def main() -> int:
 
     print(f"处理 {len(images)} 张 → {size}×{size}、≤{max_kb}KB"
           f"{'，居中裁切' if do_center else ''}{'，清生成标' if do_clean else ''}")
-    print(f"输出目录：{out_dir}（**不进技能包**，发布时单独上传）\n")
+    print(f"输出目录：{out_dir}（在技能目录之外，不会被发布校验扫到）\n")
 
     out_dir.mkdir(parents=True, exist_ok=True)
     results = []
@@ -373,8 +391,9 @@ def main() -> int:
     print()
     for target, ok in results:
         print(f"  {'[OK]' if ok else '[X] '} {target}")
-    print("\n提醒：图标**不会**被打进技能包（打包器已排除 icons/）。")
-    print("     上传技能时，在开放平台的「图标」处单独提交上面这个文件。")
+    print(f"\n提醒：图标落在技能目录之外（{out_dir}），不会污染技能仓库。")
+    print(f"     想固定到自己的目录：设环境变量 {ICON_DIR_ENV}，或每次传 --out。")
+    print("     上传技能时，在平台「图标」处单独提交上面这个文件，不要塞进技能包。")
     return 0 if all(ok for _, ok in results) else 1
 
 

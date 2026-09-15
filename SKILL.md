@@ -19,7 +19,7 @@ description: >-
 description_zh: 按需求生成技能骨架，体检脱敏后打包成可上架分发的技能包
 description_en: Generate, audit, sanitize and package agent skills into publishable bundles
 category: development
-version: 2.0.8
+version: 2.0.9
 author: 刘玉明
 trigger:
   - 生成技能
@@ -379,7 +379,7 @@ python scripts/pack_skill.py <技能目录> --allow-p1
 |---|---|
 | 构建缓存 | `__pycache__`、`node_modules`、`.venv`、`*.pyc`、`*.log` |
 | **仓库元数据** | `.git/`、`.gitignore`、`.gitattributes`、`README.md`、`CHANGELOG.md`、`LICENSE` |
-| **发布图标** | `icons/` 下的图标（见下节） |
+| **发布图标** | `icons/`（防御性排除；图标本就不该放进技能目录，见 Step 9） |
 
 > 技能目录常常同时是个 git 仓库，最容易踩的坑就是把 `.gitignore` / `README.md` 一起打进包。
 > 排除项会在打包时逐条打印出来，不会悄悄丢。
@@ -397,10 +397,15 @@ zip 顶层目录 = 技能名。
 
 安装后技能即刻就绪；若未出现在可用列表，重启会话即可被识别。
 
-## Step 9 · 技能图标（发布时单独用，**不进包**）
+## Step 9 · 技能图标（发布时单独用，**必须放在技能目录之外**）
 
 平台创建技能时要求一张图标：**512×512、PNG 或 JPG、≤500KB**。
 它是**表单里的一个字段**，不是 zip 里的文件 —— 所以图标单独生成、单独上传。
+
+⚠️ **图标不要放进技能目录。** 技能目录常常同时是 GitHub 仓库，而 SkillHub 绑定仓库
+发布时会按「文件类型白名单」逐个校验仓库文件，一张裸 `.png` 会让整次发布被拒
+（报「不支持的文件类型: icons/xxx-icon.png」）。默认输出目录在技能目录之外：
+`~/.workbuddy/skill-icons/`，可用 `--out` 或环境变量 `SKILLHUB_ICON_DIR` 改。
 
 ```bash
 # ① 拿提示词（按本技能 SKILL.md 的展示名与描述拼，保证贴合技能身份）
@@ -408,11 +413,11 @@ python scripts/make_icon.py --prompt
 
 # ② 交给 ImageGen（size 用 1024x1024），生成图回来做后处理
 #    默认：居中裁切 + 清右下角生成标 + 缩到 512×512 + 压到 ≤500KB
-python scripts/make_icon.py <生成图>            # 落盘到 <技能根>/icons/
+python scripts/make_icon.py <生成图>            # 落盘到 ~/.workbuddy/skill-icons/
 python scripts/make_icon.py <生成图> --out <目录> --name <技能名>
 
 # ③ 上传前自查
-python scripts/make_icon.py --check icons/*.png
+python scripts/make_icon.py --check ~/.workbuddy/skill-icons/*.png
 ```
 
 | 开关 | 作用 |
@@ -421,7 +426,7 @@ python scripts/make_icon.py --check icons/*.png
 | `--check` | 只做合规检查：512×512、PNG/JPG、≤500KB |
 | `--no-center` / `--no-clean` | 关掉居中裁切 / 关掉清生成标（默认都开） |
 | `--fmt png\|jpg` | 优先输出格式（默认 png；压不进 500KB 时自动降质或换格式） |
-| `--out` / `--name` | 输出目录 / 文件名前缀 |
+| `--out` / `--name` | 输出目录 / 文件名前缀（默认目录可用环境变量 `SKILLHUB_ICON_DIR` 固定） |
 
 **两个真实踩过的坑，脚本默认已经处理：**
 
@@ -442,9 +447,8 @@ python scripts/make_icon.py --check icons/*.png
 ├── SKILL.md              # ★ 必需：frontmatter + 正文
 ├── references/           # 参考资料（按需加载的 API 规范、示例数据、领域知识）
 ├── scripts/              # 可执行脚本（数据获取、处理、批量操作）
-├── templates/            # 模板文件（报告模板、工作流模板、可复制骨架）
+├── templates/            # 模板文件（报告模板、工作流模板、可复制骨架；一律 .md 后缀）
 ├── assets/               # 产出用资源（图、字体、样板稿）
-├── icons/                # 发布图标（make_icon.py 输出；**不进包**，上架时单独上传）
 └── config/               # 只放 *.example.* 空模板
 ```
 
@@ -466,11 +470,33 @@ python scripts/make_icon.py --check icons/*.png
 12. **原地打包已装技能时把自己删掉** —— 安装目标恰好等于源目录，先 `rmtree` 再复制等于自毁。`install_skill` 现在有 `is_inside` 前置判断，改这块逻辑时**不要拿掉**。
 13. **把技能打成插件形态去上传** —— 传 `skills/<技能名>/SKILL.md` 那种包，平台在**技能目录根**找不到 SKILL.md，直接报「**压缩包缺少 SKILL.md 文件**」。技能上传包 = 默认产出的技能目录包（顶层 `<技能名>/SKILL.md`）。至于「压缩包缺少 .codebuddy-plugin/plugin.json」—— 那是**专家/插件**那条线的报错，别套到技能上。
 14. **把 SKILL.md 的 description 直接搬进 plugin.json**（用 `--as-plugin` 时）—— 里面塞着十几个触发词，是给模型判断触发用的，搬到市场展示位又长又难读。脚本会剥掉「当用户说…」「也适用于…」这类长尾再截断。
-15. **把技能图标打进技能包** —— 图标是平台创建技能时**单独收的一个字段**，不是 zip 里的文件。`icons/` 已在打包时排除；上架时在「图标」处单独提交那张 512×512 的图。
-16. **把 `.git` / `README.md` 一类打进包** —— 技能目录常常同时是 git 仓库，`.gitignore`、`.gitattributes`、`README.md` 会被顺手打进去，既没用又可能漏出仓库信息。打包器已按「构建缓存 / 仓库元数据 / 发布图标」三类排除，**别改回去**。
+15. **把技能图标放进技能目录** —— 图标是平台创建技能时**单独收的一个字段**。放进技能目录，**打包时**会被排除（无害），但**绑定 GitHub 仓库发布时会被平台直接拒收**（报「不支持的文件类型」）。一律输出到技能目录之外（默认 `~/.workbuddy/skill-icons/`）。
+16. **把 `.git` / `README.md` 一类打进包** —— 技能目录常常同时是 git 仓库，`.gitignore`、`.gitattributes`、`README.md` 会被顺手打进去，既没用又可能漏出仓库信息。打包器已按「构建缓存 / 仓库元数据 / 发布图标」三类排除，**别改回去**。注意：**打包器排除了 ≠ 发布时排除了** —— SkillHub 扫描 GitHub 仓库时走的是它自己那套白名单，见坑 18。
 17. **拿专家头像的规矩做技能图标** —— 技能图标不画人物、不要复杂场景：单一主体、居中、不要文字，缩到 64px 仍能认出来。画人物头像是**专家**的 `avatars/` 那件事。
+18. **技能目录里留下非白名单文件，整次发布被拒** —— SkillHub 绑定 GitHub 仓库发布时，会按「文件类型白名单」逐个校验仓库里的文件，命中一个就整单拒收（报「**不支持的文件类型: xxx**」）。除图标外，最容易被忽略的两类：
+    - **git 仓库自带的元数据**：`.gitignore`、`.gitattributes` —— 点开头的隐藏文件一律不在白名单里
+    - **非白名单扩展名**：`.template`、`.zip`、`.xlsx` 等
+
+    三条对策：
+    - `.gitignore` / `.gitattributes` → 迁到 `.git/info/exclude` 与 `.git/info/attributes`（git 官方支持的位置，行为完全一致，但不在工作区、不进仓库，因而扫不到）
+    - 模板类文件用 `.md` 后缀，别用 `.template`
+    - 图标输出到技能目录之外
+
+    自查一句话：`git ls-files` 列出的每个文件，都该是 `.md` / `.py` / `.json` / `.txt` / `.sh` / `.yaml` 这类纯文本。
 
 ## 版本历史
+
+### v2.0.9 (2026-09-15)
+
+- **修发布阻断**：绑定 GitHub 仓库发布时，平台按「文件类型白名单」扫描仓库里的文件，
+  技能目录里的 `.gitignore`、`.gitattributes`、`icons/*.png`、`templates/*.template`
+  会让整次发布被拒（报「不支持的文件类型」）。本技能自身做了三处清理，并写进坑 18：
+  - `.gitignore` / `.gitattributes` → 迁到 `.git/info/exclude` 与 `.git/info/attributes`
+  - 图标不再输出到技能目录内：`make_icon.py` 默认改到 `~/.workbuddy/skill-icons/`
+    （可用 `--out` 或环境变量 `SKILLHUB_ICON_DIR` 覆盖）
+  - `templates/SKILL.md.template` → `templates/skill-skeleton.md`（`.template` 不在白名单）
+- 「打包时排除图标」的规则**保留**（防御性），但职责已从「排除」改为「根本不该放进去」。
+- 新增坑 18（非白名单文件导致发布被拒）。
 
 ### v2.0.8 (2026-09-15)
 
