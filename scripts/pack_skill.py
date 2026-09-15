@@ -6,6 +6,7 @@ pack_skill.py — 技能校验 + 打包 + 安装
 配套脚本：
     new_skill.py   从需求生成合规骨架（生成即体检）
     audit_skill.py 单跑体检（人读 / --json 机器读）
+    make_icon.py   技能图标：生成提示词 → 居中裁切 + 清生成标 → 512×512 / ≤500KB
 
 用法:
     python scripts/pack_skill.py <技能目录> [选项]
@@ -27,6 +28,12 @@ pack_skill.py — 技能校验 + 打包 + 安装
 交付定义:
     打包的终点是「本机有一份可用的技能」，zip 是给别人的分发副本。
     因此**默认就会安装到 ~/.workbuddy/skills**，不是可选项。
+
+不进包的东西（技能包只装技能本身）:
+    · 构建缓存：__pycache__ / node_modules / *.pyc / *.log …
+    · 仓库元数据：.git/ / .gitignore / .gitattributes / README.md / LICENSE …
+    · 发布图标：icons/ 下的图标 —— 平台在创建技能时**单独**收这个文件，
+      不随 zip 走（用 scripts/make_icon.py 生成，512×512 / PNG·JPG / ≤500KB）
 
 选项:
     --out <目录>           zip 输出目录（默认：当前工作目录）
@@ -70,6 +77,25 @@ MARKET_FIELD_SPEC = [
 # description 尾部触发词串的分界词（市场展示位不该带这串）
 TRIGGER_TAIL_RE = re.compile(r"当用户(?:说|提到)|也适用于|亦适用于|触发词[:：]?|使用场景[:：]?")
 
+# 不打进技能包的目录 / 文件。技能包只装「技能本身」，不装仓库与发布产物：
+#   · 仓库元数据：`.git/` 与 `.gitignore` / `.gitattributes` 这类是版本控制的东西，
+#     跟技能能不能跑毫无关系，打进去只会污染 zip（`.git/` 已被 JUNK_DIRS 覆盖）。
+#   · `icons/`：技能的发布图标。平台是在创建技能时的「图标」处**单独**收这个文件，
+#     不进 zip；留在技能目录里只是方便再次发布时取用。
+REPO_META_DIRS = {".github", ".gitlab", ".circleci", ".azure"}
+REPO_META_FILES = {
+    ".gitignore", ".gitattributes", ".gitmodules", ".gitkeep", ".editorconfig",
+    ".travis.yml", ".gitlab-ci.yml", ".npmrc", ".prettierrc", ".prettierrc.json",
+    "README.md", "README_zh.md", "README_EN.md", "CHANGELOG.md", "CONTRIBUTING.md",
+    "LICENSE", "LICENSE.md", "LICENSE.txt",
+}
+ICON_DIRS = {"icons", "icon"}
+
+
+def _excluded_dir(name: str) -> bool:
+    return name in REPO_META_DIRS or name in ICON_DIRS
+
+
 
 def market_field_report(root: Path):
     """逐项核对市场规范字段的齐备情况，让「按规范打包」有可见证据。
@@ -93,14 +119,23 @@ def market_field_report(root: Path):
 
 
 def collect_packable(root: Path):
-    """返回 (要打包的文件列表, 被排除的垃圾列表)。"""
-    keep, dropped = [], []
+    """返回 (要打包的文件列表, 被排除的垃圾列表, 被排除的图标文件列表)。
+
+    排除三类：构建缓存（JUNK_*）、仓库元数据（`.gitignore` / `README.md`…）、
+    发布图标（`icons/`）。后两类不是「垃圾」，是**不该进技能包**——图标由平台
+    在「图标」处单独收，仓库元数据只对 git 有意义。
+    """
+    keep, dropped, icons = [], [], []
     for dirpath, dirnames, filenames in os.walk(root):
         d = Path(dirpath)
         keepdirs = []
         for dn in dirnames:
-            if dn in JUNK_DIRS:
+            if dn in JUNK_DIRS or dn in REPO_META_DIRS:
                 dropped.append(d / dn)
+            elif dn in ICON_DIRS:
+                for sub in sorted((d / dn).rglob("*")):
+                    if sub.is_file():
+                        icons.append(sub)
             else:
                 keepdirs.append(dn)
         dirnames[:] = keepdirs
@@ -108,9 +143,13 @@ def collect_packable(root: Path):
             p = d / fn
             if fn in JUNK_FILES or p.suffix.lower() in JUNK_SUFFIX:
                 dropped.append(p)
+            elif fn in REPO_META_FILES:
+                dropped.append(p)
+            elif any(part in ICON_DIRS for part in p.relative_to(root).parts[:-1]):
+                icons.append(p)
             else:
                 keep.append(p)
-    return sorted(keep), sorted(dropped)
+    return sorted(keep), sorted(dropped), sorted(icons)
 
 
 def collect_empty_dirs(root: Path, files):
@@ -127,7 +166,8 @@ def collect_empty_dirs(root: Path, files):
             with_files.add(p)
     out = []
     for dirpath, dirnames, _ in os.walk(root):
-        dirnames[:] = [d for d in dirnames if d not in JUNK_DIRS]
+        dirnames[:] = [d for d in dirnames
+                       if d not in JUNK_DIRS and d not in REPO_META_DIRS and d not in ICON_DIRS]
         d = Path(dirpath)
         if d != root and d not in with_files:
             out.append(d)
@@ -384,15 +424,21 @@ def main():
 
     # ---------- 2. 清理清单 ----------
     print("[2/4] 生成打包清单 ...")
-    files, dropped = collect_packable(root)
+    files, dropped, icons = collect_packable(root)
     empties = collect_empty_dirs(root, files)
     total = sum(f.stat().st_size for f in files)
     print("      纳入 %d 个文件，共 %.1f KB" % (len(files), total / 1024))
     if empties:
         print("      保留 %d 个空目录（结构完整）：%s"
               % (len(empties), "、".join(str(d.relative_to(root)) + "/" for d in empties)))
+    if icons:
+        print("      排除 %d 个图标文件（**不进技能包**）：" % len(icons))
+        for d in icons[:6]:
+            print("        - %s" % d.relative_to(root))
+        print("        发布时在平台「图标」处单独上传 icons/ 下的那张"
+              "（512×512、PNG/JPG、≤500KB）")
     if dropped:
-        print("      排除 %d 项垃圾/缓存：" % len(dropped))
+        print("      排除 %d 项缓存/仓库元数据：" % len(dropped))
         for d in dropped[:12]:
             print("        - %s" % d.relative_to(root))
         if len(dropped) > 12:
@@ -450,6 +496,12 @@ def main():
     print("\n完成。")
     print("  技能目录 : %s" % (installed or root))
     print("  分发 zip : %s" % zip_path)
+    icon_dir = root / "icons"
+    if icon_dir.is_dir() and (icons or any(icon_dir.iterdir())):
+        print("  发布图标 : %s（未进包 —— 上传技能时在平台「图标」处单独提交）" % icon_dir)
+        for ic in sorted(icon_dir.iterdir()):
+            if ic.is_file():
+                print("             %s" % ic.name)
     if args.platform:
         print("  用途     : 插件形态包 —— 插件市场分发（团队 marketplace / 把技能挂到插件下）")
         print("  !! 上传 open.workbuddy.cn「技能」类目**不要**用这个包：")

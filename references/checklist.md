@@ -134,7 +134,15 @@ P1 类的处理不是删掉，而是**把范围讲清楚**：SKILL.md 里写明�
 
 前三类记 **P2 而非 P1**，原因是打包脚本本来就会自动排除它们；判 P1 只会让 `__pycache__` 把打包自己挡住（体检脚本一跑就会生成它）。
 
-排除规则写在 `pack_skill.py` 的 `JUNK_DIRS` / `JUNK_SUFFIX`。
+排除规则写在 `pack_skill.py` 的 `JUNK_DIRS` / `JUNK_SUFFIX` / `REPO_META_*` / `ICON_DIRS`，分三类：
+
+| 类别 | 内容 | 为什么排除 |
+|---|---|---|
+| 构建缓存 | `__pycache__`、`node_modules`、`.venv`、`*.pyc`、`*.log` | 与运行无关，且体积白占 |
+| **仓库元数据** | `.git/`、`.gitignore`、`.gitattributes`、`README.md`、`CHANGELOG.md`、`LICENSE` | 只对 git / 托管平台有意义，进包既没用又可能漏出仓库信息 |
+| **发布图标** | `icons/` 下的图标 | 图标是平台创建技能时**单独收的字段**，不是 zip 里的文件 |
+
+技能目录常常同时是一个 git 仓库 —— 后两类是这种情况下最容易顺手打进去的东西。
 
 ## 9. 市场分发（`pack_skill.py` 默认检查；`audit_skill.py` 需加 `--market`）
 
@@ -173,6 +181,17 @@ P1 类的处理不是删掉，而是**把范围讲清楚**：SKILL.md 里写明�
 > `version` 已按 P1 处理，`author` 暂居 P2。
 
 **默认开关为什么两套**：`pack_skill.py` 打包时默认跑（打包往往是分发的第一步），要跳过就 `--no-market`；`audit_skill.py` 默认不跑，上架前才 `--market`。若两边都默认开启，体检任何老技能都会满屏告警，工具就没人用了。
+
+**包结构对了，还差一张图**：平台创建技能时另要一张**图标**（512×512、PNG/JPG、≤500KB）。
+它是表单字段，**不在 zip 里**，用 `make_icon.py` 单独生成、上架时单独上传：
+
+```bash
+python scripts/make_icon.py --prompt        # 拿提示词 → 交给 ImageGen（1024×1024）
+python scripts/make_icon.py <生成图>        # 居中裁切 + 清生成标 + 512×512 + ≤500KB
+python scripts/make_icon.py --check icons/*.png   # 上传前自查
+```
+
+图标不进包（`icons/` 已被打包器排除），也不做体检 —— 规格对不对由 `--check` 判。
 
 ---
 

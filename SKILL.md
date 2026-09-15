@@ -13,10 +13,13 @@ description: >-
   文件引用、体积垃圾、市场分发字段，输出 P0/P1/P2 分级报告。
   技能上传包就是技能目录本身（{skill-name}/SKILL.md + references/ + scripts/ + templates/），
   平台不需要额外的清单文件。
+  也负责生成技能发布用的图标（512×512、PNG/JPG、≤500KB）：用 make_icon.py 出图并处理，
+  图标**不进技能包**，上架时在平台单独提交。当用户说「生成技能图标」「技能图标」「做个图标」
+  「图标合规检查」「图标超 500KB」时也使用。
 description_zh: 按需求生成技能骨架，体检脱敏后打包成可上架分发的技能包
 description_en: Generate, audit, sanitize and package agent skills into publishable bundles
 category: development
-version: 2.0.7
+version: 2.0.8
 author: 刘玉明
 trigger:
   - 生成技能
@@ -39,6 +42,9 @@ trigger:
   - 把功能打包
   - skill 打包
   - 生成技能包
+  - 生成技能图标
+  - 技能图标
+  - 图标合规检查
   - package skill
   - create skill
   - build skill
@@ -55,6 +61,7 @@ agent_created: true
 > - `pack_skill.py` 默认带安装 → **打包即安装**，要纯 zip 才加 `--no-install`
 > - 骨架落在工作区、或只出了个 zip，都**不算交付完成**——必须确认技能目录里有它。
 > - **要上架开放平台，直接传默认产出的技能目录包**（顶层 `<技能名>/SKILL.md`）——官网要求就是技能目录本身，**不需要**任何清单文件。加 `--platform` 打的插件形态包**不能**用于技能上架（平台会报「压缩包缺少 SKILL.md 文件」）。
+> - 上架前用 `make_icon.py` 出一张图标（512×512、PNG/JPG、≤500KB）—— 图标由平台**单独收**，**不在 zip 里**。
 
 核心不在写 zip，而在**生成时的规范**与**打包前的体检**。一个藏着硬编码路径和明文密码的技能，发给别人只会变成事故。
 
@@ -366,7 +373,18 @@ python scripts/pack_skill.py <技能目录> --allow-p1
     └── templates/      # 有则入包
 ```
 
-打包时自动排除 `__pycache__`、`node_modules`、`.venv`、日志、临时文件；zip 顶层目录 = 技能名。
+打包时**只装技能本身**，三类东西自动排除：
+
+| 类别 | 例子 |
+|---|---|
+| 构建缓存 | `__pycache__`、`node_modules`、`.venv`、`*.pyc`、`*.log` |
+| **仓库元数据** | `.git/`、`.gitignore`、`.gitattributes`、`README.md`、`CHANGELOG.md`、`LICENSE` |
+| **发布图标** | `icons/` 下的图标（见下节） |
+
+> 技能目录常常同时是个 git 仓库，最容易踩的坑就是把 `.gitignore` / `README.md` 一起打进包。
+> 排除项会在打包时逐条打印出来，不会悄悄丢。
+
+zip 顶层目录 = 技能名。
 
 **P0 永远阻断**，`--allow-p1` 也不能越过。覆盖已有同名技能需要 `--force`，脚本会先打印将被覆盖的路径。
 
@@ -379,6 +397,44 @@ python scripts/pack_skill.py <技能目录> --allow-p1
 
 安装后技能即刻就绪；若未出现在可用列表，重启会话即可被识别。
 
+## Step 9 · 技能图标（发布时单独用，**不进包**）
+
+平台创建技能时要求一张图标：**512×512、PNG 或 JPG、≤500KB**。
+它是**表单里的一个字段**，不是 zip 里的文件 —— 所以图标单独生成、单独上传。
+
+```bash
+# ① 拿提示词（按本技能 SKILL.md 的展示名与描述拼，保证贴合技能身份）
+python scripts/make_icon.py --prompt
+
+# ② 交给 ImageGen（size 用 1024x1024），生成图回来做后处理
+#    默认：居中裁切 + 清右下角生成标 + 缩到 512×512 + 压到 ≤500KB
+python scripts/make_icon.py <生成图>            # 落盘到 <技能根>/icons/
+python scripts/make_icon.py <生成图> --out <目录> --name <技能名>
+
+# ③ 上传前自查
+python scripts/make_icon.py --check icons/*.png
+```
+
+| 开关 | 作用 |
+|---|---|
+| `--prompt [--lang en]` | 只打印给 ImageGen 的提示词，不处理图片 |
+| `--check` | 只做合规检查：512×512、PNG/JPG、≤500KB |
+| `--no-center` / `--no-clean` | 关掉居中裁切 / 关掉清生成标（默认都开） |
+| `--fmt png\|jpg` | 优先输出格式（默认 png；压不进 500KB 时自动降质或换格式） |
+| `--out` / `--name` | 输出目录 / 文件名前缀 |
+
+**两个真实踩过的坑，脚本默认已经处理：**
+
+- ImageGen 出的是「1024×1024 圆角方块 + 外圈留白」，主体常偏一侧 —— 整图缩放会留白不对称，
+  随手按固定框硬切（如 `(0,0,900,900)`）会**一边内容被截、另一边留白**。`--center` 按圆角方块真实边界取正方形。
+- 生成图右下角带「AI生成 / WORKBUDDY」标，落在圆角方块**外侧**背景上。`--clean` 用周围背景重建，不碰主体。
+
+图标 prompt 的要点：**单一主体、居中、不要文字**，用 1~2 个具象物件表达「这个技能做什么」，
+缩小到 64px 仍能认出来。（画人物头像是**专家**头像的事，技能图标不讲人。）
+
+**依赖**：生成 / 体检 / 打包全流程只用标准库；`make_icon.py` 需要 Pillow，属可选依赖 ——
+`python scripts/setup.py --install-pillow`。不装也能跑到出 zip，只是图标得自己压。
+
 ## 技能目录结构约定
 
 ```
@@ -388,6 +444,7 @@ python scripts/pack_skill.py <技能目录> --allow-p1
 ├── scripts/              # 可执行脚本（数据获取、处理、批量操作）
 ├── templates/            # 模板文件（报告模板、工作流模板、可复制骨架）
 ├── assets/               # 产出用资源（图、字体、样板稿）
+├── icons/                # 发布图标（make_icon.py 输出；**不进包**，上架时单独上传）
 └── config/               # 只放 *.example.* 空模板
 ```
 
@@ -409,8 +466,25 @@ python scripts/pack_skill.py <技能目录> --allow-p1
 12. **原地打包已装技能时把自己删掉** —— 安装目标恰好等于源目录，先 `rmtree` 再复制等于自毁。`install_skill` 现在有 `is_inside` 前置判断，改这块逻辑时**不要拿掉**。
 13. **把技能打成插件形态去上传** —— 传 `skills/<技能名>/SKILL.md` 那种包，平台在**技能目录根**找不到 SKILL.md，直接报「**压缩包缺少 SKILL.md 文件**」。技能上传包 = 默认产出的技能目录包（顶层 `<技能名>/SKILL.md`）。至于「压缩包缺少 .codebuddy-plugin/plugin.json」—— 那是**专家/插件**那条线的报错，别套到技能上。
 14. **把 SKILL.md 的 description 直接搬进 plugin.json**（用 `--as-plugin` 时）—— 里面塞着十几个触发词，是给模型判断触发用的，搬到市场展示位又长又难读。脚本会剥掉「当用户说…」「也适用于…」这类长尾再截断。
+15. **把技能图标打进技能包** —— 图标是平台创建技能时**单独收的一个字段**，不是 zip 里的文件。`icons/` 已在打包时排除；上架时在「图标」处单独提交那张 512×512 的图。
+16. **把 `.git` / `README.md` 一类打进包** —— 技能目录常常同时是 git 仓库，`.gitignore`、`.gitattributes`、`README.md` 会被顺手打进去，既没用又可能漏出仓库信息。打包器已按「构建缓存 / 仓库元数据 / 发布图标」三类排除，**别改回去**。
+17. **拿专家头像的规矩做技能图标** —— 技能图标不画人物、不要复杂场景：单一主体、居中、不要文字，缩到 64px 仍能认出来。画人物头像是**专家**的 `avatars/` 那件事。
 
 ## 版本历史
+
+### v2.0.8 (2026-09-15)
+
+- **新增 `make_icon.py`：技能图标能力**（提示词构建 → 居中裁切 + 清生成标 → 512×512 / ≤500KB → 上传前自查）。
+  - `--prompt` 按本技能 SKILL.md 的展示名与描述拼 ImageGen 提示词；`--check` 只做合规检查；
+    直接传生成图则输出到技能根下的 `icons/`。
+  - **图标不进技能包**：平台在创建技能时把图标当**表单字段**单独收，所以 `icons/` 打包时一律排除，
+    上架时单独上传。人物头像那套（专家 `avatars/`）不适用于技能图标。
+- **打包排除规则补齐**：新增「仓库元数据」（`.git/`、`.gitignore`、`.gitattributes`、`README.md`、
+  `CHANGELOG.md`、`LICENSE`）与「发布图标」（`icons/`）两类排除；技能目录同时是 git 仓库时
+  不再把仓库文件打进包。排除项会分类打印，不再与缓存混在一起。
+- 新增坑 15（图标打进包）、坑 16（把 `.git` / `README.md` 打进包）、坑 17（拿专家头像规矩做技能图标）。
+- 补 `scripts/setup.py`（环境自检 + `--install-pillow`）：图标能力带来唯一的可选依赖 Pillow，
+  按本技能自己的约定（坑 6「有第三方包就给 setup.py」）补上一键安装入口。
 
 ### v2.0.7 (2026-09-15)
 
