@@ -1,6 +1,6 @@
 ---
 # ══════════════════════════════════════════════════════════════════════
-#  ▍技能骨架模板 — skill-generator / templates
+#  ▍技能骨架模板 — ym-skill-generator / templates
 #
 #  用法（两条路，优先第一条）：
 #    A. 自动生成：python scripts/new_skill.py <skill-name> --desc "..." \

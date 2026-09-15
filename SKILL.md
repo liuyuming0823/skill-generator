@@ -1,5 +1,5 @@
 ---
-name: skill-generator
+name: ym-skill-generator
 display_name: 技能生成器 · 生成/体检/打包
 display_name_en: Skill Generator & Packager
 description: >-
@@ -19,7 +19,7 @@ description: >-
 description_zh: 按需求生成技能骨架，体检脱敏后打包成可上架分发的技能包
 description_en: Generate, audit, sanitize and package agent skills into publishable bundles
 category: development
-version: 2.0.9
+version: 2.1.0
 author: 刘玉明
 trigger:
   - 生成技能
@@ -51,7 +51,7 @@ trigger:
 agent_created: true
 ---
 
-# 技能生成器 · 生成 / 体检 / 打包 (skill-generator)
+# 技能生成器 · 生成 / 体检 / 打包 (ym-skill-generator)
 
 **两个入口，一条流水线**：从需求生成技能，或把已有功能打包成技能——终点都是「一份解压即用、换台机器也能跑、可以上架」的技能包。
 
@@ -485,6 +485,18 @@ python scripts/make_icon.py --check ~/.workbuddy/skill-icons/*.png
     自查一句话：`git ls-files` 列出的每个文件，都该是 `.md` / `.py` / `.json` / `.txt` / `.sh` / `.yaml` 这类纯文本。
 
 ## 版本历史
+
+### v2.1.0 (2026-09-15)
+
+- **改名 `skill-generator` → `ym-skill-generator`**：原 slug 已被他人占用（发布时被平台
+  拒收「slug 'skill-generator' 已被其他用户占用」）。`name` / 目录名 / GitHub 仓库名
+  **三处同步改**，保持一致，否则 `skillhub install <slug>` 会对不上。
+- **更正 v2.0.1 的旧结论**：当时实测「`skill-generator` 精确名零重名」已失效。
+  换用 `ym-` 前缀后，`ym-skill-generator` 等 9 个候选实测公开层面均无同名技能。
+- `references/naming-and-discovery.md` 补「slug 占用怎么查」：判据是下载接口
+  `GET /api/v1/download?slug=<slug>`（200 = 已被别人发布 / 404 = 公开层面无此技能）；
+  两个反直觉点 —— **404 ≠ 可用**（被占用但未公开发布的同样 404），
+  且**搜索接口不能判重**（`q=` 是模糊匹配，对短前缀直接返回兜底热门榜）。
 
 ### v2.0.9 (2026-09-15)
 

@@ -1,4 +1,4 @@
-# skill-generator · 技能生成器
+# ym-skill-generator · 技能生成器
 
 按一句需求生成合规可用的技能骨架，或把对话里刚实现的功能**体检、脱敏、打包**成可分发、可上架的技能包。
 
@@ -16,15 +16,18 @@
 克隆到 WorkBuddy 技能目录即可被识别：
 
 ```bash
-git clone https://github.com/liuyuming0823/skill-generator.git ~/.workbuddy/skills/skill-generator
+git clone https://github.com/liuyuming0823/ym-skill-generator.git ~/.workbuddy/skills/ym-skill-generator
 ```
 
-Windows 路径：`%USERPROFILE%\.workbuddy\skills\skill-generator`
+Windows 路径：`%USERPROFILE%\.workbuddy\skills\ym-skill-generator`
+
+> **技能名（slug）为 `ym-skill-generator`。** 原名 `skill-generator` 已被他人占用，
+> 自 v2.1.0 起 `name` / 目录名 / 仓库名三处同步改名。
 
 ## 快速开始
 
 ```bash
-cd ~/.workbuddy/skills/skill-generator
+cd ~/.workbuddy/skills/ym-skill-generator
 
 # 从一句需求生成骨架（生成后自动体检，并直接安装到本机技能目录）
 python scripts/new_skill.py my-skill \
@@ -86,7 +89,7 @@ python scripts/pack_skill.py <dir> --dry-run     # 只看会打进哪些文件
 ## 目录结构
 
 ```
-skill-generator/
+ym-skill-generator/
 ├── SKILL.md                      # 技能主文档（完整工作流）
 ├── references/
 │   ├── checklist.md              # 交付前检查清单
@@ -96,17 +99,22 @@ skill-generator/
 ├── scripts/
 │   ├── new_skill.py              # 生成骨架
 │   ├── audit_skill.py            # 体检
-│   └── pack_skill.py             # 打包 + 安装
+│   ├── pack_skill.py             # 打包 + 安装
+│   ├── make_icon.py              # 技能图标（512×512 / ≤500KB）
+│   └── setup.py                  # 环境自检（Pillow 为可选依赖）
 └── templates/
     └── skill-skeleton.md         # SKILL.md 骨架模板
 ```
 
 ## 依赖
 
-纯 Python 标准库，无需安装任何第三方包。
+核心功能**纯 Python 标准库**，无需安装任何第三方包。
+
+仅「技能图标」能力需要 **Pillow**（可选）：跑 `python scripts/setup.py` 自检，
+或 `python scripts/setup.py --install-pillow` 一键安装。
 
 ## 相关项目
 
 - [expert-packager](https://github.com/liuyuming0823/expert-packager) —— 配套的**专家**生成器：生成、校验、安装、打包 WorkBuddy 专家包
 
-这对工具的分工是：**skill-generator 管「技能」，expert-packager 管「专家」**，两条上传规范不复用，别混。
+这对工具的分工是：**ym-skill-generator 管「技能」，expert-packager 管「专家」**，两条上传规范不复用，别混。

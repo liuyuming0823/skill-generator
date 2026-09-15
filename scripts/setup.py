@@ -36,7 +36,7 @@ def main() -> int:
         print(__doc__.strip())
         return 0
 
-    print("skill-generator 环境自检")
+    print("ym-skill-generator 环境自检")
     print("─" * 52)
 
     ok = True

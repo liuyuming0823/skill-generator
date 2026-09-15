@@ -25,11 +25,11 @@
 | `maker` | 7 | 已饱和，避开 |
 | `forge` | 6（其中 `ocas-forge` / `axiomata-skill-forge` 功能高度重合） | 语义已泛化，避开 |
 | `audit` | 5 | 单一功能赛道拥挤 |
-| `generator` | 4，**但全部带前缀**（`jc-` / `book-` / `verifier-` / `greeting-`） | 纯名可占 |
+| `generator` | 5+（`jc-` / `book-` / `verifier-` / `greeting-` 等带前缀的，**外加不带前缀的 `skill-generator`**） | 已饱和，避开 |
 | `studio` | 2（两个同名，且都是"生成+校验+发布"） | 已被占，避开 |
 | `kit` | 2（`skill-kit` 也是多能力工具包） | 已被占，避开 |
 | `foundry` | 1（`skill-foundry`） | 已被占 |
-| **`skill-generator`（精确名）** | **0** | **可占** |
+| **`skill-generator`（精确名）** | **≥1** | **2026-09-15 已被占 → 本技能改用 `ym-skill-generator`** |
 
 > 平台**允许重名**（`skill-studio` 有两个、`skill-creator` 有八个都在架上）。但重名对冷启动最不利：用户搜到后无法分辨该装哪个。**零重名优先级高于词根好听。**
 
@@ -48,7 +48,7 @@ description 的写法不是"把功能说清楚"，而是**把用户可能说的�
 skill备份、skill迁移、skill导出、skill打包时触发。
 ```
 
-明哥的 skill-generator 同理，description 里同时覆盖：
+明哥的 ym-skill-generator 同理，description 里同时覆盖：
 
 - 生成侧：做个技能 / 生成技能 / 新建技能 / 写个 skill / create skill / build skill
 - 打包侧：打包技能 / 技能打包 / 存成技能 / 导出技能 / package skill
@@ -60,7 +60,7 @@ skill备份、skill迁移、skill导出、skill打包时触发。
 生成或上架一个新技能前，逐条过：
 
 1. `name` 是否 kebab-case（小写字母 + 数字 + 连字符）——平台硬要求，中文名会被拒
-2. 到平台上搜一遍这个精确名，**有重名就换**
+2. 用**下载接口**查这个精确名是否被占（搜索接口不可信，见第六节）；有占用就换
 3. 词根是否落在红海区（对照上表）
 4. `display_name` 是否带了至少两个能力关键词
 5. `description` 是否穷举了同义说法（中文 + 英文）
@@ -78,3 +78,28 @@ skill备份、skill迁移、skill导出、skill打包时触发。
 - 平台展示时被截断
 
 正确做法是 **name 保持短而干净 → display_name 承载功能词 → description 承载长尾词**。三层各司其职。
+
+## 六、slug 占用怎么查（2026-09-15 建立）
+
+**唯一可靠的公开判据是下载接口**：
+
+```bash
+curl -s -o /dev/null -w "%{http_code}\n" "https://api.skillhub.cn/api/v1/download?slug=<候选名>"
+# 200 = 平台上已有同名「已发布」技能
+# 404 = 公开层面无此技能
+```
+
+两个反直觉的点，都实际踩过：
+
+- **搜索接口不能用来判重。** `search?q=` 是模糊匹配，对 `ym-xxx` 这类短前缀会直接返回
+  兜底热门榜（`self-improving-agent`、`tencent-docs`、`find-skills`…），看着像"无结果"
+  其实只是没匹配上，与是否被占用无关。
+- **404 ≠ 可用。** 已被占用但**尚未公开发布**（草稿 / 审核中 / 私有）的 slug 同样是 404。
+  实测反例：`skill-generator` 发布时被平台拒收「slug 已被其他用户占用」，
+  但下载接口 404、搜索也零命中。
+
+**所以流程是**：用下载接口批量筛掉"已被别人发布"的名字 → 剩下的拿去发布表单里试一次定论。
+批量工具：`~/.workbuddy/skills/skillhub-store/scripts/check_slug.py <slug...>`。
+
+**改名要连坐三处**：`name` 字段 / 技能目录名 / GitHub 仓库名。只改一处会导致
+`skillhub install <slug>`、clone 地址、平台展示三者对不上。
