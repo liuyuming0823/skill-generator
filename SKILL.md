@@ -1,26 +1,17 @@
 ---
 name: ym-skill-generator
+slug: ym-skill-generator
 display_name: 技能生成器 · 生成/体检/打包
 display_name_en: Skill Generator & Packager
-description: >-
-  按需求生成一份合规、可用的技能骨架并填充内容，或把对话里刚实现的功能体检、脱敏后
-  打包成可分发、可上架的技能包。当用户说「做个技能」「生成技能」「新建技能」「写个 skill」
-  「把这个功能打包成技能」「打包技能」「技能打包」「存成技能」「沉淀为技能」「做成技能」
-  「导出技能」「技能上架」「上传开放平台」「上架开放平台」「发布技能」「技能体检」
-  「技能合规检查」「package skill」「create skill」「build skill」时使用。
-  生成时按技能基础结构建骨架（SKILL.md / references / scripts / templates）并补齐市场分发字段；
-  打包前自动体检 9 类风险：结构、绝对路径、明文凭据、危险操作、外部依赖、数据模板、
-  文件引用、体积垃圾、市场分发字段，输出 P0/P1/P2 分级报告。
-  技能上传包就是技能目录本身（{skill-name}/SKILL.md + references/ + scripts/ + templates/），
-  平台不需要额外的清单文件。
-  也负责生成技能发布用的图标（512×512、PNG/JPG、≤500KB）：用 make_icon.py 出图并处理，
-  图标**不进技能包**，上架时在平台单独提交。当用户说「生成技能图标」「技能图标」「做个图标」
-  「图标合规检查」「图标超 500KB」时也使用。
+displayName: 技能生成器
+description: "按需求生成一份合规、可用的技能骨架并填充内容，或把对话里刚实现的功能体检、脱敏后 打包成可分发、可上架的技能包。当用户说「做个技能」「生成技能」「新建技能」「写个 skill」 「把这个功能打包成技能」「打包技能」「技能打包」「存成技能」「沉淀为技能」「做成技能」 「导出技能」「技能上架」「上传开放平台」「上架开放平台」「发布技能」「技能体检」 「技能合规检查」「package skill」「create skill」「build skill」时使用。 生成时按技能基础结构建骨架（SKILL.md / references / scripts / templates）并补齐市场分发字段； 打包前自动体检 9 类风险：结构、绝对路径、明文凭据、危险操作、外部依赖、数据模板、 文件引用、体积垃圾、市场分发字段，输出 P0/P1/P2 分级报告。 技能上传包就是技能目录本身（{skill-name}/SKILL.md + references/ + scripts/ + templates/）， 平台不需要额外的清单文件。 也负责生成技能发布用的图标（512×512、PNG/JPG、≤500KB）：用 make_icon.py 出图并处理， 图标**不进技能包**，上架时在平台单独提交。当用户说「生成技能图标」「技能图标」「做个图标」 「图标合规检查」「图标超 500KB」时也使用。"
 description_zh: 按需求生成技能骨架，体检脱敏后打包成可上架分发的技能包
 description_en: Generate, audit, sanitize and package agent skills into publishable bundles
-category: development
-version: 2.1.0
+summary: 按需求生成技能骨架，或把已有实现体检、脱敏后打包成可分发、可上架的技能包
+category: dev-programming
+version: 2.2.0
 author: 刘玉明
+tags: [技能生成, 技能打包, 技能体检, 技能上架, skill]
 trigger:
   - 生成技能
   - 做个技能
@@ -464,7 +455,7 @@ python scripts/make_icon.py --check ~/.workbuddy/skill-icons/*.png
 6. **依赖只写在正文里没脚本** —— 使用者必漏装。有第三方包就给 `scripts/setup.py`（`new_skill.py --deps` 会自动生成）。
 7. **SKILL.md 提到文件但没说是输入还是产物** —— 会被判成引用缺失。是运行时产物，就在**同一行**写上「运行时产物 / 输出文件 / 生成」这类字样，体检器会改判 P2（`OUTPUT_HINT_RE`）。
 8. **技能目录里写死自己的绝对路径** —— 别人解压到别处就跑不起来。一律用 `Path(__file__)`。
-9. **`description` 写成 YAML 折叠块时以为没人认** —— 体检器已支持 `>-` 块标量，折叠着写没问题，可读性更好。
+9. **`description` 写成 YAML 折叠块（`>-`）** —— 体检器认，**平台不认**。WorkBuddy 侧折叠块没问题（`fm_text()` 会把缩进块拼起来判），但平台自带的解析器只读「`key: 值`」那一行：`>-` 会被读成**字面量两个字符**，描述在商店里就没了。多行列表（`tags:` 下面写 `- 项`）同理被读空。**要发布就写单行**——长文本折成一行，对完整 YAML 解析器同样合法。`new_skill.py` 已按单行生成。
 10. **上一版技能的技能名/目录名不一致导致重复加载** —— 改名时目录名、`name` 字段、zip 名三者要一起改。
 11. **只交一个 zip 就收工** —— 用户要的是"有个技能能用"，不是一堆文件。把骨架建在工作区却忘了 `--install`，本机就一直没有这个技能，用户当然会问"怎么只生成了个 zip"。
 12. **原地打包已装技能时把自己删掉** —— 安装目标恰好等于源目录，先 `rmtree` 再复制等于自毁。`install_skill` 现在有 `is_inside` 前置判断，改这块逻辑时**不要拿掉**。
@@ -484,7 +475,29 @@ python scripts/make_icon.py --check ~/.workbuddy/skill-icons/*.png
 
     自查一句话：`git ls-files` 列出的每个文件，都该是 `.md` / `.py` / `.json` / `.txt` / `.sh` / `.yaml` 这类纯文本。
 
+19. **中文展示名写成下划线 `display_name`（平台不认）** —— **平台只认驼峰 `displayName`**；`display_name` 是 WorkBuddy 本机的字段，平台完全不读。缺了不报错、发布照样成功，但**商店列表里直接显示英文 slug**（例如 `ym-skill-generator`）—— 静默失败，最容易漏。要发布的技能**两个都写**：`display_name` 给本机，`displayName` 给平台。另外 `display_name` 里的「 · 功能列举」后缀不要带进 `displayName`，展示名越干净越好。
+    同一个字段族还有两处：平台发布 CLI 要求 `slug`（与 `name` 一致），缺了硬报错 `SKILL.md 缺少 slug`；`summary` 是商店列表摘要，一般直接复用 `description_zh`。
+
+20. **`category` 用了平台枚举外的值** —— 平台只认 13 个 key：`office-efficiency` / `content-creation` / `dev-programming` / `data-analysis` / `design-media` / `ai-agent` / `knowledge-management` / `business-ops` / `education` / `professional` / `it-ops-security` / `life-service` / `pay-skill`。传别的值不报错，但上架后显示「**未分类**」。注意 `development` **不是**平台值，对应的是 `dev-programming` —— `new_skill.py` 的 `--category` 默认值已改对，体检器也会校验（`SKILLHUB_CATEGORIES`）。
+
+21. **frontmatter 里写行尾 `#` 注释** —— 平台的简易解析器**不剥行尾注释**，注释会被拼进字段值（`category: development  # 分类` 读出来就是整个字符串，于是「未分类」）。注释一律**单独成行**写在字段上方，发布前也记得把整行注释删干净。
+
 ## 版本历史
+
+### v2.2.0 (2026-09-15)
+
+- **修「商店里没有中文名」**：本技能发布后商店里显示英文 slug，根因是 frontmatter 写的是
+  下划线 `display_name`，而**平台只认驼峰 `displayName`**。补 `slug` / `displayName` /
+  `summary` / `tags` 四个平台字段；`display_name` 保留给 WorkBuddy 本机。
+- **`category: development` → `dev-programming`**：`development` 不在平台 13 个枚举内，
+  这是商店里显示「未分类」的原因。
+- **description 三件套由 YAML 折叠块改为单行**：平台解析器只读「`key: 值`」那一行，
+  `>-` 会被读成字面量 `>-`。`tags` 改内联列表写法（多行列表同样会被读空）。
+- **`new_skill.py` 同步修**：生成的 frontmatter 直接就是平台可读形态（单行 + 平台字段），
+  `--category` 默认值改为 `dev-programming`。
+- **`audit_skill.py` 新增三项检查**：缺 `displayName` 判 P1；`description`/`tags` 等用块标量、
+  `category` 不在枚举内各判 P2。
+- `templates/skill-skeleton.md` 同步：字段注释改为独立成行（行尾注释会被平台读进值里）。
 
 ### v2.1.0 (2026-09-15)
 

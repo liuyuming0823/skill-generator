@@ -32,7 +32,11 @@ new_skill.py — 从需求生成一份合规的技能骨架（生成即体检）
     --desc <文本>           description：做什么 / 何时触发 / 触发词（建议 60~200 字）
     --desc-zh <文本>        中文一句话介绍（30 字内）
     --desc-en <文本>        英文一句话介绍（首字母大写，结尾不加句号）
-    --category <分类>       市场分类，默认 development
+    --category <分类>       市场分类，默认 dev-programming；须落在平台 13 个枚举内，
+                            否则上架后显示「未分类」（office-efficiency / content-creation /
+                            dev-programming / data-analysis / design-media / ai-agent /
+                            knowledge-management / business-ops / education / professional /
+                            it-ops-security / life-service / pay-skill）
     --author <署名>         默认读取 ~/.workbuddy/skills 内已有技能的署名为参考，否则留 <你的署名>
     --triggers a,b,c        结构化触发词，逗号分隔；会同时补进 description
     --dirs scripts,references,templates,assets,config   要创建的子目录（默认 scripts,references）
@@ -133,27 +137,40 @@ def yaml_quote(s: str) -> str:
     return s
 
 
-def folded(key: str, text: str, indent: int = 2) -> str:
-    """写成 YAML 折叠块，长 description 在 SKILL.md 里更好读。"""
-    pad = " " * indent
-    return "%s: >-\n%s%s" % (key, pad, text)
+def yaml_str(s: str) -> str:
+    """长文本一律写成单行双引号标量。
+
+    平台侧解析器（SkillHub 自带 CLI）只支持 `key: value` 与 `key: [a, b]`，
+    `>-` 折叠块会被读成字面量 ">-"、多行列表会被读成空串 —— 上传成功但内容是空的。
+    折成一行对完整 YAML 解析器同样合法，两边都安全。
+    """
+    return '"%s"' % (s or "").replace("\\", "\\\\").replace('"', '\\"')
 
 
 # ----------------------------------------------------------------- 内容生成
 
 def build_frontmatter(a, name: str, dirs, deps) -> str:
+    # 平台只认驼峰 displayName 当展示名（下划线 display_name 它不认，缺了商店里直接
+    # 显示英文 slug）。展示名也越简洁越好，去掉「 · 功能列举」后缀。
+    display = a.display_name.split(" · ")[0].strip() or a.display_name
     lines = ["---"]
     lines.append("name: %s" % name)
+    lines.append("slug: %s" % name)                      # 平台 CLI 发布必填，与 name 保持一致
     lines.append("display_name: %s" % yaml_quote(a.display_name))
     if a.mode == "market":
         lines.append("display_name_en: %s" % yaml_quote(a.display_name_en))
-    lines.append(folded("description", a.desc))
+    lines.append("displayName: %s" % yaml_quote(display))
+    lines.append("description: %s" % yaml_str(a.desc))
     if a.mode == "market":
-        lines.append(folded("description_zh", a.desc_zh))
-        lines.append(folded("description_en", a.desc_en))
+        lines.append("description_zh: %s" % yaml_str(a.desc_zh))
+        lines.append("description_en: %s" % yaml_str(a.desc_en))
+        lines.append("summary: %s" % yaml_str(a.desc_zh))
         lines.append("category: %s" % a.category)
     lines.append("version: 0.1.0")
     lines.append("author: %s" % yaml_quote(a.author))
+    tags = [t.strip() for t in (a.triggers or []) if t.strip()][:5]
+    if tags:                                             # 列表用内联写法：块列表平台同样读不到
+        lines.append("tags: [%s]" % ", ".join(tags))
     if a.triggers:
         lines.append("trigger:")
         for t in a.triggers:
@@ -309,7 +326,9 @@ def main() -> int:
     ap.add_argument("--desc", default=None, help="description：做什么/何时触发/触发词")
     ap.add_argument("--desc-zh", default=None)
     ap.add_argument("--desc-en", default=None)
-    ap.add_argument("--category", default="development")
+    ap.add_argument("--category", default="dev-programming",
+                    help="市场分类，默认 dev-programming；取值须落在平台 13 个枚举内，"
+                         "否则上架后显示「未分类」（枚举见 audit_skill.SKILLHUB_CATEGORIES）")
     ap.add_argument("--author", default=None)
     ap.add_argument("--triggers", default="")
     ap.add_argument("--dirs", default="scripts,references")

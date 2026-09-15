@@ -374,11 +374,26 @@ def check_structure(root: Path, rep: Report, market: bool = False):
 
 # ------------------------------------------------- 市场分发合规（--market）
 
+# SkillHub 平台只认这 13 个分类 key（实测 GET https://api.skillhub.cn/api/v1/categories）。
+# 传枚举外的值不会报错，但上架后会显示成「未分类」——静默失败，最容易被忽略。
+SKILLHUB_CATEGORIES = {
+    "pay-skill", "office-efficiency", "content-creation", "dev-programming",
+    "data-analysis", "design-media", "ai-agent", "knowledge-management",
+    "business-ops", "education", "professional", "it-ops-security", "life-service",
+}
+
+# 平台会读、且必须写成单行标量的字段：平台的解析器只支持 `key: value` 与 `key: [a, b]`，
+# 写成 `>-` 折叠块或多行列表时会被读成字面量 ">-" 或空串（静默丢失）。
+PLATFORM_SCALAR_KEYS = ("description", "description_zh", "description_en", "summary", "tags")
+
 # 市场规范中明确标注「必填」的字段：缺一个就会上架失败
 MARKET_REQUIRED = [
     ("description_zh", "缺 description_zh", "补一句话中文介绍，30 字以内；不要照抄 description"),
     ("description_en", "缺 description_en", "补一句话英文介绍，首字母大写、结尾不加句号"),
     ("version",        "缺 version",        "补语义化版本号，如 1.0.0；每次改动后递增"),
+    # 平台用驼峰 displayName 当展示名（下划线 display_name 它不认）。
+    # 缺了不报错，但商店里会直接显示英文 slug —— 静默失败，必须当必填拦。
+    ("displayName",    "缺 displayName",    "补中文展示名（驼峰 displayName；下划线 display_name 平台不认）"),
 ]
 # 规范示例里出现、但未标为必填的字段：缺了不阻断上架，只影响展示效果
 # author 归在这一档有实证依据：本机 4 个真实市场技能里只有 1 个带 author（且写在 metadata 下），
@@ -386,8 +401,9 @@ MARKET_REQUIRED = [
 MARKET_RECOMMENDED = [
     ("display_name",    "缺 display_name",    "补中文展示名，市场列表里显示这个"),
     ("display_name_en", "缺 display_name_en", "补英文展示名"),
-    ("category",        "缺 category",        "补分类；取值须落在平台分类枚举内（规范示例：writing）"),
+    ("category",        "缺 category",        "补分类；取值须落在平台分类枚举内（见 SKILLHUB_CATEGORIES）"),
     ("author",          "缺 author",          "补署名（个人或团队/公司名）；也可写在 metadata: 之下"),
+    ("slug",            "缺 slug",            "补 slug（与 name 一致）；平台 CLI 发布时报错「SKILL.md 缺少 slug」"),
 ]
 
 
@@ -427,6 +443,29 @@ def fm_text(fm: str, key: str):
             buf.append(nxt.strip())
         return " ".join(x for x in buf if x).strip() or None
     return None
+
+
+def fm_is_block(fm: str, key: str) -> bool:
+    """该字段是否写成 YAML 块标量（`>-` / `|`）或多行列表。
+
+    平台侧解析器只看「key: value」这一行，块写法的内容它读不到。
+    """
+    lines = fm.splitlines()
+    for i, line in enumerate(lines):
+        m = re.match(r"^[ \t]*%s:[ \t]*(.*)$" % re.escape(key), line)
+        if not m:
+            continue
+        val = m.group(1).strip()
+        if val in (">", "|", ">-", "|-", ">+", "|+"):
+            return True
+        if val == "":
+            for nxt in lines[i + 1:]:
+                if not nxt.strip():
+                    continue
+                return bool(re.match(r"^[ \t]+", nxt))
+            return False
+        return False
+    return False
 
 
 def parse_frontmatter(content: str):
@@ -474,6 +513,22 @@ def check_market(root: Path, rep: Report, content: str):
     if a and re.search(r"(?i)workbuddy|assistant|ai\b|unknown|todo|your|xxx|示例", a):
         rep.add("P2", "市场分发", skill_md, "author 为占位署名", 1,
                 "author = %r" % a, "改成真实署名（个人或团队/公司名）")
+
+    # 平台的解析器只认单行标量：`>-` 折叠块 / 多行列表会被读成 ">-" 或空串。
+    # 这是静默失败 —— 上传成功，但描述、标签在商店里是空的。
+    for key in PLATFORM_SCALAR_KEYS:
+        if fm_is_block(fm, key):
+            rep.add("P2", "市场分发", skill_md, "%s 用了块标量/多行列表" % key, 1,
+                    "%s 写成 >- / | 块或多行列表" % key,
+                    "平台解析器只认单行 `%s: 值`（列表用 `[a, b]`），块写法它读成 \">-\" 或空；"
+                    "长文本折成一行即可" % key)
+
+    cat = fm_value(fm, "category")
+    if cat and cat not in SKILLHUB_CATEGORIES:
+        rep.add("P2", "市场分发", skill_md, "category 不在平台枚举内", 1,
+                "category = %r" % cat,
+                "平台只认 13 个 key，非枚举值会上架为「未分类」：%s"
+                % "、".join(sorted(SKILLHUB_CATEGORIES)))
 
 
 def check_junk(root: Path, files, junk_dirs, rep: Report):

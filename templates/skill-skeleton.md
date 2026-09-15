@@ -16,32 +16,52 @@
 # ══════════════════════════════════════════════════════════════════════
 
 # ── 标识 ────────────────────────────────────────────────────────────
-name: your-skill-name                        # [必填] 小写字母+数字+连字符，必须与目录名一致
-display_name: 你的技能展示名                  # [建议] 中文展示名，市场列表显示这个
-display_name_en: Your Skill Name             # [建议] 英文展示名
+# [必填] 小写字母+数字+连字符，必须与目录名一致；平台用 name 生成 slug
+name: your-skill-name
+# [建议] 平台的发布 CLI 必填，与 name 保持一致
+slug: your-skill-name
+# [建议] WorkBuddy 本机展示名，可以带「 · 功能列举」
+display_name: 你的技能展示名
+# [建议] 英文展示名
+display_name_en: Your Skill Name
+# [必填] 平台（SkillHub）的商店展示名，**只认驼峰 displayName**，
+#        不认下划线 display_name —— 缺了商店里直接显示英文 slug
+displayName: 你的技能
 
-# ── 描述三件套（各有各的用处，别只写一个）────────────────────────────
-description: >-                              # [必填] 给模型看：做什么 / 何时触发 / 触发词
-  一句话说清这个技能解决什么问题。当用户提到「触发词A」「触发词B」「触发词C」，
-  或出现 <具体场景> 时使用。
-description_zh: >-                           # [必填] 给中文用户看，30 字以内，别照抄 description
-  一句话中文介绍
-description_en: >-                           # [必填] 给英文用户看，首字母大写、结尾不加句号
-  One-line English introduction
+# ── 描述：一律写成单行 ──────────────────────────────────────────────
+# ⚠️ 平台自带的解析器只认「key: 值」这一行，且不认行尾 # 注释：
+#      `>-` 折叠块会被读成字面量 ">-"；多行列表会被读空；行尾注释会被拼进值里。
+#      长文本折成一行即可（对完整 YAML 解析器同样合法，两边都安全）。
+# [必填] 给模型看：做什么 / 何时触发 / 触发词
+description: "一句话说清这个技能解决什么问题。当用户提到「触发词A」「触发词B」或出现「具体场景」时使用。"
+# [必填] 给中文用户看，30 字以内，别照抄 description
+description_zh: "一句话中文介绍"
+# [必填] 给英文用户看，首字母大写、结尾不加句号
+description_en: "One-line English introduction"
+# [建议] 商店列表摘要，一般直接复用 description_zh
+summary: "一句话中文介绍"
+# [建议] 商店标签，用内联列表写法（多行 `- 项` 平台同样读不到）
+tags: [标签一, 标签二]
 
 # ── 元信息 ──────────────────────────────────────────────────────────
-category: development                        # [建议] 分类之一，取值须在平台枚举内（如 writing）
-version: 1.0.0                               # [必填] 语义化版本，改动后必须递增
-author: 你的署名                              # [建议] 个人或团队/公司名，别留机器默认值
+# [建议] 分类须落在平台 13 个枚举内，否则上架后显示「未分类」：
+#   office-efficiency / content-creation / dev-programming / data-analysis /
+#   design-media / ai-agent / knowledge-management / business-ops / education /
+#   professional / it-ops-security / life-service / pay-skill
+category: dev-programming
+# [必填] 语义化版本，改动后必须递增
+version: 1.0.0
+# [建议] 个人或团队/公司名，别留机器默认值
+author: 你的署名
 
 # ── 可选开关（用不到就删）───────────────────────────────────────────
-allowed-tools: Read, Write, Bash             # [可选] 工具白名单，逗号分隔
-disable-model-invocation: false              # [可选] true = 只能用户手动调用，AI 不自动触发
-user-invocable: true                         # [可选] false = 隐藏菜单，仅供 AI 内部调用
+allowed-tools: Read, Write, Bash
+disable-model-invocation: false
+user-invocable: true
 
 # ── WorkBuddy 本机扩展 ──────────────────────────────────────────────
-agent_created: true                          # 让 Agent 能用 skill_manage 后续修改本技能
-trigger:                                     # 结构化触发词，比 description 里的散文更稳
+agent_created: true
+trigger:
   - 触发词A
   - 触发词B
 ---

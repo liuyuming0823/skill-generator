@@ -21,7 +21,7 @@
 | `name` 字段存在 | P0 | — | 补 |
 | `name` 为 kebab-case | P2（`--market` 下为 P1） | `^[a-z0-9][a-z0-9-]*$` | 本机自用不必改；要发布就改成小写连字符 |
 | `name` 与目录名一致 | P2 | — | 安装/升级按目录名定位，建议对齐 |
-| `description` 存在 | P0 | 支持单行标量，也支持 `>-` 折叠块（`fm_text()` 会把块拼起来判） | 补 |
+| `description` 存在 | P0 | 支持单行标量，也支持 `>-` 折叠块（`fm_text()` 会把块拼起来判）；**但平台解析器认不出折叠块**，要发布就写单行 | 补 |
 | `description` 无 `<` `>` | P1 | 打包校验会直接失败 | 换方括号或中文书名号 |
 | `description` ≥ 30 字符 | P2 | 折叠块按拼接后的长度算 | 写清「做什么 / 何时用 / 触发词」 |
 | 有 `agent_created: true` | P2 | — | 补上，否则后续无法用 skill_manage 修改 |
@@ -153,7 +153,8 @@ P1 类的处理不是删掉，而是**把范围讲清楚**：SKILL.md 里写明�
 > - 包结构必须是 **`{skill-name}/SKILL.md`** + `references/` + `scripts/` + `templates/`，
 >   **不需要** `.codebuddy-plugin/plugin.json`。打成 `skills/<技能名>/SKILL.md` 那种插件形态，
 >   平台在技能目录根找不到 SKILL.md，会直接报「**压缩包缺少 SKILL.md 文件**」。
-> - frontmatter **必填**：`description` / `description_zh` / `description_en` / `version` / `author`。
+> - frontmatter **必填**：`description` / `description_zh` / `description_en` / `version` / `author`，
+>   展示名还要给驼峰 **`displayName`**（下划线 `display_name` 平台不认，缺了商店里显示英文 slug）。
 > - 「压缩包缺少 .codebuddy-plugin/plugin.json」是**专家 / 插件**那条上传线的报错，与技能无关。
 
 | 字段 | 何时必填 | P 级 | 修复 |
@@ -161,9 +162,22 @@ P1 类的处理不是删掉，而是**把范围讲清楚**：SKILL.md 里写明�
 | `description_zh` | 要分发 | P1 | 补一句话中文介绍，30 字以内 |
 | `description_en` | 要分发 | P1 | 补一句话英文介绍 |
 | `version` | 要分发 | P1 | 语义化版本号，如 `1.0.0` |
-| `display_name` / `display_name_en` | 建议 | P2 | 市场列表的展示名 |
-| `category` | 建议 | P2 | 分类之一，须落在平台枚举内 |
+| `displayName` | 要分发 | P1 | 平台（SkillHub）的商店展示名，**驼峰**；缺了商店显示英文 slug |
+| `display_name` / `display_name_en` | 建议 | P2 | **WorkBuddy 本机**的展示名（平台不读这两个） |
+| `slug` | 建议 | P2 | 平台发布 CLI 必填（`SKILL.md 缺少 slug`），与 `name` 一致 |
+| `summary` | 建议 | P2 | 商店列表摘要，一般复用 `description_zh` |
+| `category` | 建议 | P2 | 分类之一，须落在平台 13 个枚举内（见 `SKILLHUB_CATEGORIES`） |
 | `author` | 建议 | P2 | 署名；也可写在 `metadata:` 之下 |
+
+**平台的解析规则比 YAML 更窄**（实测 SkillHub 自带 CLI）：
+
+| 检查 | P 级 | 说明 |
+|---|---|---|
+| `description` / `summary` / `tags` 用 `>-` 块或 `- 项` 多行列表 | P2 | 平台只读「`key: 值`」那一行：`>-` 读成字面量 `>-`，多行列表读成空 |
+| `category` 不在 13 个枚举内 | P2 | 不报错，但上架后显示「未分类」 |
+| frontmatter 里有行尾 `#` 注释 | P2 | 平台不剥注释，会被拼进字段值；注释一律独立成行 |
+
+所以：**长文本折成一行 + 列表用 `[a, b]`**。这对完整 YAML 解析器同样合法，两边都安全。
 
 另外四项校验：
 
@@ -175,6 +189,8 @@ P1 类的处理不是删掉，而是**把范围讲清楚**：SKILL.md 里写明�
 | `author` 仍是机器默认值 | P2 | 如 `WorkBuddy AI Assistant`，应改真实署名 |
 
 **定级依据是实测，不是规范文本**：本机 4 个真实市场技能里 `description_zh` / `description_en` 是 4/4 都有，`display_name` 3/4，`category` 2/4，`author` 只有 1/4（且写在 `metadata:` 之下）。所以只有前两个定 P1 阻断，其余一律 P2。照抄规范表格的"必填"会把大多数已上架技能判成不合格。
+
+**例外是 `displayName`（定 P1）**：判据不是"规范说必填"，而是**它的缺失是静默的** —— 发布成功、不报任何错，只是商店列表里显示英文 slug。`description_zh` 那类缺了顶多少句介绍，`displayName` 缺了是"我的技能没有中文名"，必须拦。同理，块标量被平台读成 `>-`、`category` 落到「未分类」也都是静默失败，所以各加一条 P2 提示。
 
 > ⚠️ 但官方文档把 `version` / `author` 也列为**必填**。实测有已上架技能缺 `author`，
 > 说明解析阶段未必强卡；**一旦上传被字段校验拦下，先把这 5 个必填补齐再传**。
