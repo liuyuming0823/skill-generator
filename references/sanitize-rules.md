@@ -66,6 +66,10 @@ const CONFIG_PATH = path.join(os.homedir(), ".workbuddy", "mycfg.json");
 
 以下情形留绝对路径是**合理默认值**，不是硬编码，体检命中后加 `# skill-audit: ignore` 并注明理由：
 
+> ⚠️ **标记必须加在被判定的那一行行尾** —— 审计是**按行匹配**的。把标记写到换行后的下一行
+> **完全不生效**，P1 照样报。典型踩法：一条长命令折成两行，标记放第二行末尾。
+> 文档里的 HTML 注释写法（`<!-- skill-audit: ignore -->`）同理，也要和触发行同行。
+
 ```python
 # 取临时目录时回退到系统目录
 tmp = os.environ.get("TEMP") or r"C:\Windows\Temp"   # skill-audit: ignore 系统兜底默认值

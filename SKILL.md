@@ -9,7 +9,7 @@ description_zh: 按需求生成技能骨架，体检脱敏后打包成可上架�
 description_en: Generate, audit, sanitize and package agent skills into publishable bundles
 summary: 按需求生成技能骨架，或把已有实现体检、脱敏后打包成可分发、可上架的技能包
 category: dev-programming
-version: 2.2.2
+version: 2.2.3
 author: 刘玉明
 tags: [技能生成, 技能打包, 技能体检, 技能上架, skill]
 trigger:
@@ -521,6 +521,12 @@ python scripts/make_icon.py --check ~/.workbuddy/skill-icons/*.png
     加 `--no-prefix`，别把个人前缀带进别人的安装清单。
 
 ## 版本历史
+
+### v2.2.3 (2026-09-15)
+
+- `sanitize-rules.md` 补一条硬要求：**`# skill-audit: ignore` 必须加在被判定的那一行行尾** ——
+  审计按行匹配，标记写到换行后的下一行完全不生效（长命令折行时最容易踩）。
+- 相关技能更名：`ym-skillhub-publisher` 已与 `skillhub-store` 合并为 **`ym-skillhub`**。
 
 ### v2.2.2 (2026-09-15)
 
