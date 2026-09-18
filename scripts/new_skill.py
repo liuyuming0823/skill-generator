@@ -60,6 +60,7 @@ import os
 import re
 import shutil
 import sys
+import time
 from pathlib import Path
 
 sys.dont_write_bytecode = True          # 不留 __pycache__
@@ -308,6 +309,22 @@ def build_config_example(name: str, fields) -> str:
 
 # ----------------------------------------------------------------- 主流程
 
+def _rename_with_retry(tmp: Path, target: Path, tries: int = 5, delay: float = 0.4):
+    """Windows 下目标路径常被短暂锁定：本机工具（杀软实时扫描、技能目录 watcher）会在
+    新路径刚出现的瞬间去打开它，撞进这个竞争窗口的 rename 就报 WinError 5「访问被拒绝」。
+    实测特征：同一名字稳定失败、换个名字就能成功、过一会儿再跑又好了。
+    这种竞争等一下就好，按递增间隔重试几次即可，不重试就会误报「权限不足」。"""
+    last: BaseException | None = None
+    for i in range(tries):
+        try:
+            tmp.rename(target)
+            return
+        except PermissionError as e:
+            last = e
+            time.sleep(delay * (i + 1))
+    raise last  # type: ignore[misc]
+
+
 def write_all(target: Path, a, name: str, dirs, deps, fields, force: bool):
     """先建临时目录，全部写成功后再替换目标。
 
@@ -350,7 +367,7 @@ def write_all(target: Path, a, name: str, dirs, deps, fields, force: bool):
         backup = None
         if target.exists():
             backup = make_backup(target)      # 先备份旧版，再让新版就位
-        tmp.rename(target)
+        _rename_with_retry(tmp, target)
         if backup:
             created.append("(覆盖) 旧版已备份到 %s" % backup)
     except BaseException:
@@ -435,8 +452,10 @@ def main() -> int:
     args.display_name_en = args.display_name_en or title_case(bare)
     args.author = args.author or guess_author()
     if not args.desc:
-        args.desc = ("<一句话说清这个技能解决什么问题。> 当用户提到「%s」"
-                     "或出现 <场景> 时使用。" % "」「".join(triggers or ["触发词A", "触发词B"]))
+        # 同样不能用尖括号（漏改过一处）：check_market 把含 <> 的展示字段判成 P1，
+        # 于是「纯脚本生成」不给人填任何东西时也会红一次。
+        args.desc = ("待填写：一句话说清这个技能解决什么问题。当用户提到「%s」"
+                     "时使用。" % "」「".join(triggers or ["触发词A", "触发词B"]))
     elif triggers:
         miss = [t for t in triggers if t not in args.desc]
         if miss:

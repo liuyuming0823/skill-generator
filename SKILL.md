@@ -219,7 +219,7 @@ python scripts/new_skill.py <skill-name> --out <父目录> \
 
 ## Step 6 · 脱敏与参数化
 
-最容易被跳过、后果最严重的一步。三类必须处理：
+最容易被跳过、后果最严重的一步。四类必须处理：
 
 **① 绝对路径** → 换成动态定位，不要写死盘符和用户名
 
@@ -244,6 +244,19 @@ USER_DIR   = Path(os.path.expanduser("~")) / ".workbuddy"  # 用户目录
 - 外部可执行文件（ffmpeg、edge-tts、浏览器…）：写清安装方式、检测方法、缺失时的行为
 - 中文字体：说明回退顺序，否则用户只看到方块
 
+**④ 个人标识** → 技能是边用边写长的，正文很容易冒出**只对原作者成立**的东西
+
+- **昵称 / 真名**（「让 XX 挑」「提醒 XX」）：一律改成「用户」。自己看没感觉，别人装上去
+  就是一堆看不懂的名词。
+- **指向作者本机的私有文件**（某工作区的 `dist/xxx.md`）：改成通用清单或删掉，
+  否则既是悬空引用、又暴露了作者的目录结构。
+- **写死的提交邮箱 / 账号**（脚本里的 `user.email=xxx@qq.com`）：改成命令行参数或环境变量，
+  兜底用 `<owner>@users.noreply.github.com` 这类 noreply 地址 —— 写死的话，别人跑脚本会拿
+  作者的身份提交。
+- ⚠️ **体检器查不出这一类**（它只查凭据与硬编码路径）。P0/P1 全过 ≠ 没有个人标识，
+  分发前必须人工搜一遍：昵称、`C:\Users\<用户名>` 类路径、提交邮箱与 GitHub 账号、
+  只在作者机器上存在的文件引用。
+
 ## Step 7 · 体检
 
 ```bash
@@ -255,8 +268,8 @@ python scripts/audit_skill.py <技能目录> --market    # 追加市场分发规
 
 同类问题自动聚合（不会逐行刷屏），密钥一律打码回显。退出码：`0` 通过 / `1` 有 P1 / `2` 有 P0。
 
-**9 类**：结构 · 绝对路径 · 凭据 · 危险操作 · 外部依赖 · 数据模板 · 引用 · 体积与垃圾 · 市场分发字段。
-逐项判定标准与放行条件见 `references/checklist.md`。
+**10 类**：结构 · 绝对路径 · 凭据 · 危险操作 · **文档放行标记** · 外部依赖 · 数据模板 · 引用 ·
+体积与垃圾 · 市场分发字段。逐项判定标准与放行条件见 `references/checklist.md`。
 
 第 9 项的开关两边不同：**打包时默认检查**（打包往往是分发的第一步），要跳过加 `--no-market`；
 **单独体检时默认不查**，上架前才加 `--market` —— 否则体检任何一个老技能都会满屏告警。
@@ -273,6 +286,10 @@ python scripts/audit_skill.py <技能目录> --market    # 追加市场分发规
 | 缺的 frontmatter 字段想自动补 | `--fix`（先看建议）→ `--fix --write`（落盘，写前自动备份） |
 
 放行要留理由，别把 `ignore` 当成消音器。
+
+**放行标记只写在脚本文件的行尾**（`.py` / `.js` / `.sh`）。`.md` 文档里**禁用注释形式** ——
+文档注释渲染后不可见，第三方安全审计会判为「隐蔽地指示审计放行」，实测已使技能被标 `suspicious`；
+文档里确需例外就用上面第 3 行那种 `.skillignore`，可见、可审阅。这条已由体检规则「文档放行标记」自动拦。
 
 ## Step 8 · 打包与安装
 
@@ -368,11 +385,23 @@ python scripts/pack_skill.py <技能目录> --allow-p1
 
 15. **以为 CLI 发布能把分类一起改掉** —— SkillHub CLI 的发布 payload 固定只有 `slug` / `version` / `displayName` / `summary` / `description` / `tags` / `license` / `homepage` / `changelog` 九个键，**没有 `category`**。于是出现最迷惑的一幕：SKILL.md 里分类写对了、CLI 也返回 `✓ Published`，线上分类纹丝不动。改分类只能走**网页 dashboard**；发布后用 `GET /api/v1/skills/<slug>` 复核 `skill.category`。
 
+16. **明明没有配置项，却被报 P2「未说明配置位置」** —— 现象：纯指导型技能（无脚本、无凭据、不落任何文件）体检仍提示"SKILL.md 未说明运行时配置/数据的存放位置"。原因：这条规则是**按关键词命中**判定，正文里一处都没提就默认"没写清楚"。规避：在「运行前提」里显式写一句「**无运行时配置与本地数据**，不读写任何配置文件」，P2 立刻消掉。别为消 P2 而硬造一个 `config/` 目录。
+
 上架阶段还有 2 条坑（非白名单文件导致整次发布被拒、`✓ Published` ≠ 已上线），见 `references/publishing.md`；低频坑见 `references/pitfalls.md`。
 
 ## 版本历史
 
 （完整历史见 `references/CHANGELOG.md`，这里只留最近两版）
+
+### v2.3.1 (2026-09-19)
+
+- **新增体检规则「文档放行标记」**：`.md` / `.txt` 文档里出现 HTML 注释形式的放行标记直接判 P1。
+  这类注释渲染后**不可见**，第三方安全审计会读成「隐蔽地指示审计放行」= 提示注入 ——
+  实测已使一个技能在 SkillHub 被判 `suspicious`。放行应当可见、可审阅：脚本文件保留行尾注释，
+  文档改用 `.skillignore` 的 `rule:规则名`，或改写正文让它不再命中。
+- **修掉教人踩坑的文档**：`references/sanitize-rules.md` 原有「文档里的 HTML 注释写法同理」一句，
+  等于在教人用隐藏注释放行，已改为明确禁止；`references/checklist.md` 的「放行方式」同步补上。
+- 并修 `new_skill.py --force` 的「随机访问被拒绝」（改名重试）、不传 `--desc` 时占位说明带尖括号。
 
 ### v2.3.0 (2026-09-16)
 
@@ -385,7 +414,4 @@ python scripts/pack_skill.py <技能目录> --allow-p1
 - **文档瘦身**：正文 27255 → 约 15000 字符，细节迁 `references/`（CHANGELOG / icon-guide /
   publishing / pitfalls）；顶部加 30 秒 TL;DR 与退出码表。
 
-### v2.2.3 (2026-09-15)
-
-- `sanitize-rules.md` 补一条硬要求：**`# skill-audit: ignore` 必须加在被判定的那一行行尾**。
-- 相关技能更名：`ym-skillhub-publisher` 已与 `skillhub-store` 合并为 **`ym-skillhub`**。
+（v2.2.3 及更早见 `references/CHANGELOG.md`。）

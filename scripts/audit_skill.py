@@ -728,6 +728,32 @@ def check_danger(root: Path, files, rep: Report):
                             "在 SKILL.md 显式声明该能力及其影响范围，并说明凭据来源；这条是知情项，不是错误")
 
 
+# 文档里的 HTML 注释放行标记。注释渲染后不可见，第三方安全审计会把它读成
+# 「隐蔽地指示审计放行」= 提示注入（实测已使技能在 SkillHub 被判 suspicious）。
+DOC_SUPPRESS = re.compile(r"<!--\s*skill-audit\s*:\s*ignore\s*-->")
+
+
+def check_doc_suppression(root: Path, files, rep: Report):
+    """文档里禁止用 HTML 注释放行（脚本文件的行尾注释不查）。
+
+    注释渲染后不可见，第三方安全审计读到「让审计跳过」的隐藏指令会判定为提示注入
+    —— 实测已使技能在 SkillHub 被判 suspicious。放行应当可见、可审阅。
+    """
+    for f in files:
+        if f.suffix.lower() not in DOC_EXT:
+            continue
+        text = read_text(f)
+        if not text:
+            continue
+        rel = f.relative_to(root)
+        for lineno, line in enumerate(text.splitlines(), 1):
+            if DOC_SUPPRESS.search(line):
+                rep.add("P1", "文档放行标记", rel, "隐藏注释放行", lineno, line.strip()[:100],
+                        "文档注释渲染后不可见，第三方安全审计会判为「隐蔽地指示审计放行」。"
+                        "改法：① 改写正文让它不再命中该规则；② 确需例外，就改用技能根目录 .skillignore "
+                        "写 `rule:规则名`，并在正文显式说明理由。该标记今后只用于脚本文件的行尾注释")
+
+
 def check_deps(root: Path, files, rep: Report):
     py_files = [f for f in files if f.suffix == ".py"]
     js_files = [f for f in files if f.suffix.lower() in {".js", ".mjs", ".cjs", ".ts"}]
@@ -906,6 +932,7 @@ def audit(root: Path, market: bool = False, ignored_rules=None, ignore_globs=Non
     check_abs_paths(root, files, rep)
     check_secrets(root, files, rep)
     check_danger(root, files, rep)
+    check_doc_suppression(root, files, rep)
     check_deps(root, files, rep)
     check_refs(root, files, rep)
     if content is not None and not re.search(r"\.workbuddy|~/|配置|config", content):
@@ -1037,6 +1064,12 @@ RULES_DOC = {
                                 "改成枚举内的值，如 dev-programming", "改值后消除"),
     "垃圾目录": ("目录里出现 .venv / node_modules / dist 等", "打进包会又大又带隐私",
                  "打包时自动排除；若它其实是技能的一部分就改名", "打包已自动排除"),
+    "隐藏注释放行": ("文档（.md / .markdown / .txt）里出现 HTML 注释形式的放行标记",
+                     "注释渲染后不可见，第三方安全审计会读成「隐蔽地指示审计放行」= 提示注入"
+                     "（实测已使技能在 SkillHub 被判 suspicious）",
+                     "① 改写正文让它不再命中那条规则；② 或改用技能根目录 .skillignore 写 "
+                     "`rule:规则名`，并在正文显式说明理由",
+                     "不放行 —— 放行应当可见、可审阅。该标记只用于脚本文件的行尾注释"),
 }
 
 
@@ -1071,6 +1104,8 @@ _SELFTEST_KEY = "sk-" + "abcdefghijklmnopqrstuvwxyz012345"
 _SELFTEST_KEY_NAME = "api" + "_key"
 _SELFTEST_RM = "rm" + "tree"
 _SELFTEST_PATH = "C:/" + "work/someone/secret/data"
+# 同理拆开写：否则这行本身就是一条「文档放行标记」样例，会污染本技能自身的体检
+_SELFTEST_SUPPRESS = "<!--" + " skill-audit: ignore " + "-->"
 
 _BAD_SKILL_MD = '''---
 name: bad-skill-selftest
@@ -1106,6 +1141,17 @@ agent_created: true
 
 运行 `scripts/demo.py` 完成自检。
 '''
+
+# 文档里带隐藏的审计放行注释：应判出 P1「隐藏注释放行」
+_SUPPRESS_SKILL_MD = '''---
+name: suppress-selftest
+description: "自检用的样例：正文里藏了不可见的审计放行注释，应被判出 P1。"
+---
+
+# 隐藏注释样例
+
+正文本身很正常。{sup}
+'''.format(sup=_SELFTEST_SUPPRESS)
 
 
 def _build_tmp_skill(md_text: str, extra_files=()):
@@ -1149,6 +1195,9 @@ def selftest() -> int:
 
     run_case("带病样例（应判出 P0 凭据 + P1 路径 + P1 危险操作）",
              _build_tmp_skill(_BAD_SKILL_MD), 1, 2)
+
+    run_case("文档隐藏注释放行（应判出 P1 文档放行标记）",
+             _build_tmp_skill(_SUPPRESS_SKILL_MD), 0, 1)
 
     ok_clean = True
     root = _build_tmp_skill(_GOOD_SKILL_MD, ("scripts/demo.py",))
